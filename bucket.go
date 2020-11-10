@@ -33,6 +33,7 @@ const (
 const DefaultFillPercent = 0.5
 
 // Bucket represents a collection of key/value pairs inside the database.
+// 相当于命名空间, 代表一个完整的B+树
 type Bucket struct {
 	*bucket
 	tx       *Tx                // the associated transaction
@@ -54,7 +55,7 @@ type Bucket struct {
 // then its root page can be stored inline in the "value", after the bucket
 // header. In the case of inline buckets, the "root" will be 0.
 type bucket struct {
-	root     pgid   // page id of the bucket's root-level page
+	root     pgid   // 根页面id page id of the bucket's root-level page
 	sequence uint64 // monotonically incrementing, used by NextSequence()
 }
 
@@ -523,6 +524,7 @@ func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, in
 }
 
 // spill writes all the nodes for this bucket to dirty pages.
+// 节点分裂
 func (b *Bucket) spill() error {
 	// Spill all child buckets first.
 	for name, child := range b.buckets {
@@ -630,6 +632,7 @@ func (b *Bucket) write() []byte {
 }
 
 // rebalance attempts to balance all nodes.
+// 合并节点
 func (b *Bucket) rebalance() {
 	for _, n := range b.nodes {
 		n.rebalance()

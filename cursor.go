@@ -17,7 +17,7 @@ import (
 // after mutating data.
 type Cursor struct {
 	bucket *Bucket
-	stack  []elemRef
+	stack  []elemRef // 保存了查找key 的过程中 的节点路径
 }
 
 // Bucket returns the bucket that this cursor was created from.
@@ -329,14 +329,15 @@ func (c *Cursor) nsearch(key []byte) {
 	}
 
 	// If we have a page then search its leaf elements.
-	inodes := p.leafPageElements()
+	inodes := p.leafPageElements() // 所有left element
+	// 二分查找一次
 	index := sort.Search(int(p.count), func(i int) bool {
 		return bytes.Compare(inodes[i].key(), key) != -1
 	})
 	e.index = index
 }
 
-// keyValue returns the key and value of the current leaf element.
+// keyValue returns the key and value of the current leaf element. 返回栈顶node 的kv
 func (c *Cursor) keyValue() ([]byte, []byte, uint32) {
 	ref := &c.stack[len(c.stack)-1]
 	if ref.count() == 0 || ref.index >= ref.count() {

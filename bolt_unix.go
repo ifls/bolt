@@ -47,19 +47,21 @@ func funlock(db *DB) error {
 // mmap memory maps a DB's data file.
 func mmap(db *DB, sz int) error {
 	// Map the data file to memory.
+	// mmap 系统调用 映射内存, 返回的b是切片
 	b, err := syscall.Mmap(int(db.file.Fd()), 0, sz, syscall.PROT_READ, syscall.MAP_SHARED|db.MmapFlags)
 	if err != nil {
 		return err
 	}
 
 	// Advise the kernel that the mmap is accessed randomly.
+	// 指明由操作系统管理page cache
 	if err := madvise(b, syscall.MADV_RANDOM); err != nil {
 		return fmt.Errorf("madvise: %s", err)
 	}
 
 	// Save the original byte slice and convert to a byte array pointer.
 	db.dataref = b
-	db.data = (*[maxMapSize]byte)(unsafe.Pointer(&b[0]))
+	db.data = (*[maxMapSize]byte)(unsafe.Pointer(&b[0])) // *byte
 	db.datasz = sz
 	return nil
 }
@@ -80,6 +82,7 @@ func munmap(db *DB) error {
 }
 
 // NOTE: This function is copied from stdlib because it is not available on darwin.
+// 从标准库, 拷贝的系统调用实现
 func madvise(b []byte, advice int) (err error) {
 	_, _, e1 := syscall.Syscall(syscall.SYS_MADVISE, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)), uintptr(advice))
 	if e1 != 0 {

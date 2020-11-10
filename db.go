@@ -33,7 +33,7 @@ const IgnoreNoSync = runtime.GOOS == "openbsd"
 const (
 	DefaultMaxBatchSize  int = 1000
 	DefaultMaxBatchDelay     = 10 * time.Millisecond
-	DefaultAllocSize         = 16 * 1024 * 1024
+	DefaultAllocSize         = 16 * 1024 * 1024 // 16M
 )
 
 // default page size for db is set to the OS page size.
@@ -95,18 +95,18 @@ type DB struct {
 	AllocSize int
 
 	path     string
-	file     *os.File
-	lockfile *os.File // windows only
-	dataref  []byte   // mmap'ed readonly, write throws SEGV
-	data     *[maxMapSize]byte
-	datasz   int
-	filesz   int // current on disk file size
+	file     *os.File          // 数据文件
+	lockfile *os.File          // windows only
+	dataref  []byte            // mmap'ed readonly, write throws SEGV
+	data     *[maxMapSize]byte // 数据起始地址
+	datasz   int               // 数据区域的size
+	filesz   int               // current on disk file size
 	meta0    *meta
 	meta1    *meta
 	pageSize int
-	opened   bool
-	rwtx     *Tx
-	txs      []*Tx
+	opened   bool  // open() close() 标记, 防重复关闭, 防开启读写操作
+	rwtx     *Tx   // 读写事务
+	txs      []*Tx // 所有读事务
 	freelist *freelist
 	stats    Stats
 
@@ -115,9 +115,9 @@ type DB struct {
 	batchMu sync.Mutex
 	batch   *batch
 
-	rwlock   sync.Mutex   // Allows only one writer at a time.
-	metalock sync.Mutex   // Protects meta page access.
-	mmaplock sync.RWMutex // Protects mmap access during remapping.
+	rwlock   sync.Mutex   // 写锁 Allows only one writer at a time.
+	metalock sync.Mutex   // 元页面 访问 Protects meta page access.
+	mmaplock sync.RWMutex // 内存 映射锁 读写锁 Protects mmap access during remapping.
 	statlock sync.RWMutex // Protects stats access.
 
 	ops struct {
@@ -126,7 +126,7 @@ type DB struct {
 
 	// Read only mode.
 	// When true, Update() and Begin(true) return ErrDatabaseReadOnly immediately.
-	readOnly bool
+	readOnly bool // 是否只读
 }
 
 // Path returns the path to currently open database file.
@@ -147,6 +147,7 @@ func (db *DB) String() string {
 // Open creates and opens a database at the given path.
 // If the file does not exist then it will be created automatically.
 // Passing in nil options will cause Bolt to open the database with the default options.
+// 根据文件, 打开db
 func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	var db = &DB{opened: true}
 
@@ -171,18 +172,19 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// Open data file and separate sync handler for metadata writes.
 	db.path = path
 	var err error
+	// 不用 os.O_TRUNC 标记??
 	if db.file, err = os.OpenFile(db.path, flag|os.O_CREATE, mode); err != nil {
 		_ = db.close()
 		return nil, err
 	}
 
 	// Lock file so that other processes using Bolt in read-write mode cannot
-	// use the database  at the same time. This would cause corruption since
-	// the two processes would write meta pages and free pages separately.
-	// The database file is locked exclusively (only one process can grab the lock)
-	// if !options.ReadOnly.
+	// use the database  at the same time. 防止其他进程写
+	// This would cause corruption since the two processes would write meta pages and free pages separately.
+
+	// The database file is locked exclusively (only one process can grab the lock) if !options.ReadOnly. 读写模式是排他锁
 	// The database file is locked using the shared lock (more than one process may
-	// hold a lock at the same time) otherwise (options.ReadOnly is set).
+	// hold a lock at the same time) otherwise (options.ReadOnly is set). 只读模式, 加共享锁
 	if err := flock(db, mode, !db.readOnly, options.Timeout); err != nil {
 		_ = db.close()
 		return nil, err
@@ -195,14 +197,16 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	if info, err := db.file.Stat(); err != nil {
 		return nil, err
 	} else if info.Size() == 0 {
-		// Initialize new files with meta pages.
+		// Initialize new files with meta pages. 初始化元数据 页面
 		if err := db.init(); err != nil {
 			return nil, err
 		}
 	} else {
 		// Read the first meta page to determine the page size.
-		var buf [0x1000]byte
+		// 读元数据 page
+		var buf [0x1000]byte // 0x1000 = 4096
 		if _, err := db.file.ReadAt(buf[:], 0); err == nil {
+			// 获取第一个page的元数据
 			m := db.pageInBuffer(buf[:], 0).meta()
 			if err := m.validate(); err != nil {
 				// If we can't read the page size, we can assume it's the same
@@ -226,7 +230,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		},
 	}
 
-	// Memory map the data file.
+	// Memory map the data file. 内存映射数据文件
 	if err := db.mmap(options.InitialMmapSize); err != nil {
 		_ = db.close()
 		return nil, err
@@ -234,6 +238,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 
 	// Read in the freelist.
 	db.freelist = newFreelist()
+	// 读取空闲页面列表
 	db.freelist.read(db.page(db.meta().freelist))
 
 	// Mark the database as opened and return.
@@ -253,7 +258,7 @@ func (db *DB) mmap(minsz int) error {
 		return fmt.Errorf("file size too small")
 	}
 
-	// Ensure the size is at least the minimum size.
+	// Ensure the size is at least the minimum size. 获取文件的大小
 	var size = int(info.Size())
 	if size < minsz {
 		size = minsz
@@ -273,7 +278,7 @@ func (db *DB) mmap(minsz int) error {
 		return err
 	}
 
-	// Memory-map the data file as a byte slice.
+	// Memory-map the data file as a byte slice. 内存映射指定长度的内存区域
 	if err := mmap(db, size); err != nil {
 		return err
 	}
@@ -345,11 +350,11 @@ func (db *DB) init() error {
 	db.pageSize = os.Getpagesize()
 
 	// Create two meta pages on a buffer.
-	buf := make([]byte, db.pageSize*4)
+	buf := make([]byte, db.pageSize*4) // 2 个元数据, 1个freelist 页面, 一个叶子节点界面
 	for i := 0; i < 2; i++ {
 		p := db.pageInBuffer(buf[:], pgid(i))
 		p.id = pgid(i)
-		p.flags = metaPageFlag
+		p.flags = metaPageFlag // 元数据 page
 
 		// Initialize the meta page.
 		m := p.meta()
@@ -375,10 +380,11 @@ func (db *DB) init() error {
 	p.flags = leafPageFlag
 	p.count = 0
 
-	// Write the buffer to our data file.
+	// Write the buffer to our data file. 写到数据文件
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
 		return err
 	}
+	// 同步到磁盘
 	if err := fdatasync(db); err != nil {
 		return err
 	}
@@ -501,6 +507,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	return t, nil
 }
 
+//
 func (db *DB) beginRWTx() (*Tx, error) {
 	// If the database was opened with Options.ReadOnly, return an error.
 	if db.readOnly {
@@ -509,6 +516,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 
 	// Obtain writer lock. This is released by the transaction when it closes.
 	// This enforces only one writer transaction at a time.
+	// 写事务会上锁, 不支持并发写事务
 	db.rwlock.Lock()
 
 	// Once we have the writer lock then we can lock the meta pages so that
@@ -528,6 +536,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	db.rwtx = t
 
 	// Free any pages associated with closed read-only transactions.
+	// 释放 已关闭的只读事务相关的page(写事务必须在读事务全部结束, 才能执行到这里??)
 	var minid txid = 0xFFFFFFFFFFFFFFFF
 	for _, t := range db.txs {
 		if t.meta.txid < minid {
@@ -586,7 +595,7 @@ func (db *DB) Update(fn func(*Tx) error) error {
 
 	// Make sure the transaction rolls back in the event of a panic.
 	defer func() {
-		if t.db != nil {
+		if t.db != nil { // tx.Close 会 tx.db = nil
 			t.rollback()
 		}
 	}()
@@ -598,11 +607,11 @@ func (db *DB) Update(fn func(*Tx) error) error {
 	err = fn(t)
 	t.managed = false
 	if err != nil {
-		_ = t.Rollback()
+		_ = t.Rollback() // 会调用 tx.close
 		return err
 	}
 
-	return t.Commit()
+	return t.Commit() // 会调用 tx.close
 }
 
 // View executes a function within the context of a managed read-only transaction.
@@ -633,14 +642,14 @@ func (db *DB) View(fn func(*Tx) error) error {
 		return err
 	}
 
-	if err := t.Rollback(); err != nil {
+	if err := t.Rollback(); err != nil { // 读事务, 不提交 再次回滚??
 		return err
 	}
 
 	return nil
 }
 
-// Batch calls fn as part of a batch. It behaves similar to Update,
+// Batch calls fn as part of a batch. It behaves similar to Update, 就像更新一样
 // except:
 //
 // 1. concurrent Batch calls can be combined into a single Bolt
@@ -658,20 +667,21 @@ func (db *DB) View(fn func(*Tx) error) error {
 //
 // Batch is only useful when there are multiple goroutines calling it.
 func (db *DB) Batch(fn func(*Tx) error) error {
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 1) // 缓冲chan
 
 	db.batchMu.Lock()
 	if (db.batch == nil) || (db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
-		// There is no existing batch, or the existing batch is full; start a new one.
+		// There is no existing batch, or the existing batch is full; start a new one. 老的批处理对象, 一直另一个goroutine运行,
+		// batch对象可以被覆盖
 		db.batch = &batch{
 			db: db,
 		}
-		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
+		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger) // 超时触发
 	}
 	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
 	if len(db.batch.calls) >= db.MaxBatchSize {
 		// wake up batch, it's ready to run
-		go db.batch.trigger()
+		go db.batch.trigger() // 主动触发
 	}
 	db.batchMu.Unlock()
 
@@ -975,7 +985,7 @@ type meta struct {
 	root     bucket
 	freelist pgid
 	pgid     pgid
-	txid     txid
+	txid     txid // 事务id
 	checksum uint64
 }
 

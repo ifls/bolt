@@ -10,14 +10,14 @@ import (
 // node represents an in-memory, deserialized page.
 type node struct {
 	bucket     *Bucket
-	isLeaf     bool
+	isLeaf     bool // 是叶子还是 枝干节点
 	unbalanced bool
 	spilled    bool
-	key        []byte
+	key        []byte // 第一个key
 	pgid       pgid
 	parent     *node
 	children   nodes
-	inodes     inodes
+	inodes     inodes // []inode 存放kv数据
 }
 
 // root returns the top-level node this node is attached to.
@@ -113,6 +113,7 @@ func (n *node) prevSibling() *node {
 }
 
 // put inserts a key/value.
+// 将 kv 放到
 func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 	if pgid >= n.bucket.tx.meta.pgid {
 		panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", pgid, n.bucket.tx.meta.pgid))
@@ -126,7 +127,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })
 
 	// Add capacity and shift nodes if we don't have an exact match and need to insert.
-	exact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))
+	exact := len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey)
 	if !exact {
 		n.inodes = append(n.inodes, inode{})
 		copy(n.inodes[index+1:], n.inodes[index:])
@@ -157,7 +158,7 @@ func (n *node) del(key []byte) {
 	n.unbalanced = true
 }
 
-// read initializes the node from a page.
+// read initializes the node from a page. 从page 解析数据
 func (n *node) read(p *page) {
 	n.pgid = p.id
 	n.isLeaf = ((p.flags & leafPageFlag) != 0)
@@ -187,7 +188,7 @@ func (n *node) read(p *page) {
 	}
 }
 
-// write writes the items onto one or more pages.
+// write writes the items onto one or more pages. node写入数据到 一到多个 page
 func (n *node) write(p *page) {
 	// Initialize page.
 	if n.isLeaf {
@@ -587,18 +588,20 @@ func (n *node) dump() {
 
 type nodes []*node
 
-func (s nodes) Len() int           { return len(s) }
-func (s nodes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-func (s nodes) Less(i, j int) bool { return bytes.Compare(s[i].inodes[0].key, s[j].inodes[0].key) == -1 }
+func (s nodes) Len() int      { return len(s) }
+func (s nodes) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+func (s nodes) Less(i, j int) bool {
+	return bytes.Compare(s[i].inodes[0].key, s[j].inodes[0].key) == -1
+}
 
 // inode represents an internal node inside of a node.
 // It can be used to point to elements in a page or point
 // to an element which hasn't been added to a page yet.
 type inode struct {
-	flags uint32
-	pgid  pgid
-	key   []byte
-	value []byte
+	flags uint32 // 用于 leaf node，区分是正常 value 还是 subbucket
+	pgid  pgid   // 用于 branch node, 子节点的页面id
+	key   []byte // key
+	value []byte // val
 }
 
 type inodes []inode

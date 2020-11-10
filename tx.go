@@ -11,7 +11,7 @@ import (
 )
 
 // txid represents the internal transaction identifier.
-type txid uint64
+type txid uint64 // 事务递增id
 
 // Tx represents a read-only or read/write transaction on the database.
 // Read-only transactions can be used for retrieving values for keys and creating cursors.
@@ -25,7 +25,7 @@ type Tx struct {
 	writable       bool
 	managed        bool
 	db             *DB
-	meta           *meta
+	meta           *meta // 元数据
 	root           Bucket
 	pages          map[pgid]*page
 	stats          TxStats
@@ -52,12 +52,12 @@ func (tx *Tx) init(db *DB) {
 	// Copy over the root bucket.
 	tx.root = newBucket(tx)
 	tx.root.bucket = &bucket{}
-	*tx.root.bucket = tx.meta.root
+	*tx.root.bucket = tx.meta.root // 拷贝
 
 	// Increment the transaction id and add a page cache for writable transactions.
 	if tx.writable {
 		tx.pages = make(map[pgid]*page)
-		tx.meta.txid += txid(1)
+		tx.meta.txid += txid(1) // 可写事务, 递增事务id
 	}
 }
 
@@ -72,6 +72,7 @@ func (tx *Tx) DB() *DB {
 }
 
 // Size returns current database size in bytes as seen by this transaction.
+// 这个事务, 能看到多大的数据?
 func (tx *Tx) Size() int64 {
 	return int64(tx.meta.pgid) * int64(tx.db.pageSize)
 }
@@ -94,14 +95,14 @@ func (tx *Tx) Stats() TxStats {
 	return tx.stats
 }
 
-// Bucket retrieves a bucket by name.
+// Bucket retrieves a bucket by name. bucket 是用key绑定的??
 // Returns nil if the bucket does not exist.
-// The bucket instance is only valid for the lifetime of the transaction.
+// The bucket instance is only valid for the lifetime of the transaction. 生命周期有限
 func (tx *Tx) Bucket(name []byte) *Bucket {
 	return tx.root.Bucket(name)
 }
 
-// CreateBucket creates a new bucket.
+// CreateBucket creates a new bucket. 创建一个桶 存放数据
 // Returns an error if the bucket already exists, if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
@@ -134,6 +135,7 @@ func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 }
 
 // OnCommit adds a handler function to be executed after the transaction successfully commits.
+// 提交成功后, 执行的回调函数
 func (tx *Tx) OnCommit(fn func()) {
 	tx.commitHandlers = append(tx.commitHandlers, fn)
 }
@@ -141,6 +143,7 @@ func (tx *Tx) OnCommit(fn func()) {
 // Commit writes all changes to disk and updates the meta page.
 // Returns an error if a disk write error occurs, or if Commit is
 // called on a read-only transaction.
+// 事务提交时，才会进行 B+ 树的分裂与合并，这样可以避免事务回滚时做无用功。
 func (tx *Tx) Commit() error {
 	_assert(!tx.managed, "managed tx commit not allowed")
 	if tx.db == nil {
@@ -299,7 +302,7 @@ func (tx *Tx) Copy(w io.Writer) error {
 	return err
 }
 
-// WriteTo writes the entire database to a writer.
+// WriteTo writes the entire database to a writer. mvcc 备份
 // If err == nil then exactly tx.Size() bytes will be written into the writer.
 func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	// Attempt to open reader with WriteFlag
@@ -349,7 +352,7 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	return n, f.Close()
 }
 
-// CopyFile copies the entire database to file at the given path.
+// CopyFile copies the entire database to file at the given path. 备份到另一个文件
 // A reader transaction is maintained during the copy so it is safe to continue
 // using the database while a copy is in progress.
 func (tx *Tx) CopyFile(path string, mode os.FileMode) error {
@@ -470,7 +473,7 @@ func (tx *Tx) allocate(count int) (*page, error) {
 	return p, nil
 }
 
-// write writes any dirty pages to disk.
+// write writes any dirty pages to disk. 刷新到磁盘
 func (tx *Tx) write() error {
 	// Sort pages by id.
 	pages := make(pages, 0, len(tx.pages))
@@ -495,7 +498,7 @@ func (tx *Tx) write() error {
 				sz = maxAllocSize - 1
 			}
 
-			// Write chunk to disk.
+			// Write chunk to disk. 写入数据到文件
 			buf := ptr[:sz]
 			if _, err := tx.db.ops.writeAt(buf, offset); err != nil {
 				return err
@@ -518,12 +521,14 @@ func (tx *Tx) write() error {
 
 	// Ignore file sync if flag is set on DB.
 	if !tx.db.NoSync || IgnoreNoSync {
+		// 调用fsync 系统调用
 		if err := fdatasync(tx.db); err != nil {
 			return err
 		}
 	}
 
 	// Put small pages back to page pool.
+	// 回收页面
 	for _, p := range pages {
 		// Ignore page sizes over 1 page.
 		// These are allocated using make() instead of the page pool.
@@ -568,6 +573,7 @@ func (tx *Tx) writeMeta() error {
 
 // page returns a reference to the page with a given id.
 // If page has been written to then a temporary buffered page is returned.
+// 拿到 page对象
 func (tx *Tx) page(id pgid) *page {
 	// Check the dirty pages first.
 	if tx.pages != nil {

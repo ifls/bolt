@@ -15,24 +15,25 @@ const branchPageElementSize = int(unsafe.Sizeof(branchPageElement{}))
 const leafPageElementSize = int(unsafe.Sizeof(leafPageElement{}))
 
 const (
-	branchPageFlag   = 0x01
-	leafPageFlag     = 0x02
-	metaPageFlag     = 0x04
-	freelistPageFlag = 0x10
+	branchPageFlag   = 0x01 // 分支页
+	leafPageFlag     = 0x02 // 叶子页面
+	metaPageFlag     = 0x04 // 存放db的元数据
+	freelistPageFlag = 0x10 // 存放db的空闲page
 )
 
 const (
-	bucketLeafFlag = 0x01
+	bucketLeafFlag = 0x01 // 此标记的Bucket 指向子bucket
 )
 
 type pgid uint64
 
+// 页面 4096B
 type page struct {
 	id       pgid
-	flags    uint16
-	count    uint16
-	overflow uint32
-	ptr      uintptr
+	flags    uint16  // 区分不同类型的 页面
+	count    uint16  // 此页面中的数据个数
+	overflow uint32  // 单个页面不够, 会分配多个
+	ptr      uintptr // 存放数据的起始地址, 大小size是固定的, 所以范围也是固定的, node的数据存放在此位置
 }
 
 // typ returns a human readable page type string used for debugging.
@@ -97,7 +98,7 @@ func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
 type branchPageElement struct {
 	pos   uint32
 	ksize uint32
-	pgid  pgid
+	pgid  pgid // branch node 的 value 是子节点的 page id，存放在 branchPageElement 里
 }
 
 // key returns a byte slice of the node key.
@@ -108,8 +109,8 @@ func (n *branchPageElement) key() []byte {
 
 // leafPageElement represents a node on a leaf page.
 type leafPageElement struct {
-	flags uint32
-	pos   uint32
+	flags uint32 // 区分 subbucket 和 普通的value
+	pos   uint32 // key 距离 leafPageElement 的位移
 	ksize uint32
 	vsize uint32
 }
