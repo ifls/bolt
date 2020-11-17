@@ -155,10 +155,11 @@ func (c *Cursor) seek(seek []byte) (key []byte, value []byte, flags uint32) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
 
 	// Start from root page/node and traverse to correct page.
-	c.stack = c.stack[:0]
-	c.search(seek, c.bucket.root)
-	ref := &c.stack[len(c.stack)-1]
+	c.stack = c.stack[:0]         // len cap = 0, 保留 data ptr
+	c.search(seek, c.bucket.root) // 从根node开始
 
+	// check
+	ref := &c.stack[len(c.stack)-1]
 	// If the cursor is pointing to the end of page/node then return nil.
 	if ref.index >= ref.count() {
 		return nil, nil, 0
@@ -252,6 +253,8 @@ func (c *Cursor) next() (key []byte, value []byte, flags uint32) {
 // search recursively performs a binary search against a given page/node until it finds a given key.
 func (c *Cursor) search(key []byte, pgid pgid) {
 	p, n := c.bucket.pageNode(pgid)
+
+	// if p == nil 不应该直接返回?
 	if p != nil && (p.flags&(branchPageFlag|leafPageFlag)) == 0 {
 		panic(fmt.Sprintf("invalid page type: %d: %x", p.id, p.flags))
 	}
@@ -276,7 +279,7 @@ func (c *Cursor) searchNode(key []byte, n *node) {
 	index := sort.Search(len(n.inodes), func(i int) bool {
 		// TODO(benbjohnson): Optimize this range search. It's a bit hacky right now.
 		// sort.Search() finds the lowest index where f() != -1 but we need the highest index.
-		ret := bytes.Compare(n.inodes[i].key, key)
+		ret := bytes.Compare(n.inodes[i].key, key) // 0 ==, 1 >, -1 <
 		if ret == 0 {
 			exact = true
 		}
@@ -315,11 +318,13 @@ func (c *Cursor) searchPage(key []byte, p *page) {
 }
 
 // nsearch searches the leaf node on the top of the stack for a key.
+// 只在单个node内搜索
 func (c *Cursor) nsearch(key []byte) {
 	e := &c.stack[len(c.stack)-1]
 	p, n := e.page, e.node
 
 	// If we have a node then search its inodes.
+	// node
 	if n != nil {
 		index := sort.Search(len(n.inodes), func(i int) bool {
 			return bytes.Compare(n.inodes[i].key, key) != -1
@@ -329,6 +334,7 @@ func (c *Cursor) nsearch(key []byte) {
 	}
 
 	// If we have a page then search its leaf elements.
+	// page
 	inodes := p.leafPageElements() // 所有left element
 	// 二分查找一次
 	index := sort.Search(int(p.count), func(i int) bool {
@@ -340,6 +346,7 @@ func (c *Cursor) nsearch(key []byte) {
 // keyValue returns the key and value of the current leaf element. 返回栈顶node 的kv
 func (c *Cursor) keyValue() ([]byte, []byte, uint32) {
 	ref := &c.stack[len(c.stack)-1]
+	// 没有一个key 或者 key 索引 超过数量
 	if ref.count() == 0 || ref.index >= ref.count() {
 		return nil, nil, 0
 	}
@@ -356,6 +363,7 @@ func (c *Cursor) keyValue() ([]byte, []byte, uint32) {
 }
 
 // node returns the node that the cursor is currently positioned on.
+// 返回当前所在节点
 func (c *Cursor) node() *node {
 	_assert(len(c.stack) > 0, "accessing a node with a zero-length cursor stack")
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 
 // Ensure the "info" command can print information about a database.
 func TestInfoCommand_Run(t *testing.T) {
+
 	db := MustOpen(0666, nil)
 	db.DB.Close()
 	defer db.Close()

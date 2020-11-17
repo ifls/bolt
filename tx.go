@@ -25,8 +25,8 @@ type Tx struct {
 	writable       bool
 	managed        bool
 	db             *DB
-	meta           *meta // 元数据
-	root           Bucket
+	meta           *meta  // 元数据
+	root           Bucket // 根桶
 	pages          map[pgid]*page
 	stats          TxStats
 	commitHandlers []func()

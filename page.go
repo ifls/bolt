@@ -7,12 +7,12 @@ import (
 	"unsafe"
 )
 
-const pageHeaderSize = int(unsafe.Offsetof(((*page)(nil)).ptr))
+const pageHeaderSize = int(unsafe.Offsetof(((*page)(nil)).ptr)) // 16
 
 const minKeysPerPage = 2
 
-const branchPageElementSize = int(unsafe.Sizeof(branchPageElement{}))
-const leafPageElementSize = int(unsafe.Sizeof(leafPageElement{}))
+const branchPageElementSize = int(unsafe.Sizeof(branchPageElement{})) // 16B
+const leafPageElementSize = int(unsafe.Sizeof(leafPageElement{}))     // 16B
 
 const (
 	branchPageFlag   = 0x01 // 分支页
@@ -92,7 +92,7 @@ type pages []*page
 
 func (s pages) Len() int           { return len(s) }
 func (s pages) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
+func (s pages) Less(i, j int) bool { return s[i].id < s[j].id } // 根据id排序
 
 // branchPageElement represents a node on a branch page.
 type branchPageElement struct {
@@ -104,6 +104,7 @@ type branchPageElement struct {
 // key returns a byte slice of the node key.
 func (n *branchPageElement) key() []byte {
 	buf := (*[maxAllocSize]byte)(unsafe.Pointer(n))
+	// pos 是key相对element的偏移
 	return (*[maxAllocSize]byte)(unsafe.Pointer(&buf[n.pos]))[:n.ksize]
 }
 
@@ -118,12 +119,14 @@ type leafPageElement struct {
 // key returns a byte slice of the node key.
 func (n *leafPageElement) key() []byte {
 	buf := (*[maxAllocSize]byte)(unsafe.Pointer(n))
+	// pos 是key相对element的偏移
 	return (*[maxAllocSize]byte)(unsafe.Pointer(&buf[n.pos]))[:n.ksize:n.ksize]
 }
 
 // value returns a byte slice of the node value.
 func (n *leafPageElement) value() []byte {
 	buf := (*[maxAllocSize]byte)(unsafe.Pointer(n))
+	// pos 是key相对element的偏移
 	return (*[maxAllocSize]byte)(unsafe.Pointer(&buf[n.pos+n.ksize]))[:n.vsize:n.vsize]
 }
 
@@ -157,6 +160,7 @@ func (a pgids) merge(b pgids) pgids {
 
 // mergepgids copies the sorted union of a and b into dst.
 // If dst is too small, it panics.
+// 有序合并数组
 func mergepgids(dst, a, b pgids) {
 	if len(dst) < len(a)+len(b) {
 		panic(fmt.Errorf("mergepgids bad len %d < %d + %d", len(dst), len(a), len(b)))

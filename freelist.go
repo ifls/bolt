@@ -11,7 +11,7 @@ import (
 type freelist struct {
 	ids     []pgid          // 所有的可用页面id all free and available free page ids.
 	pending map[txid][]pgid // 临时被事务占用的页面 mapping of soon-to-be free page ids by tx.
-	cache   map[pgid]bool   // 数据的map形式, 建立索引 快速查找 fast lookup of all free and pending page ids.
+	cache   map[pgid]bool   // 数据的map形式, 建立索引 快速查找 fast lookup of all free and pending page ids. 包括 空闲和 待处理的
 }
 
 // newFreelist returns an empty, initialized freelist.
@@ -25,7 +25,7 @@ func newFreelist() *freelist {
 // size returns the size of the page after serialization.
 func (f *freelist) size() int {
 	n := f.count()
-	if n >= 0xFFFF {
+	if n >= 0xFFFF { // 如果超过 2B, 需要额外的空间, 存放数量
 		// The first element will be used to store the count. See freelist.write.
 		n++
 	}
@@ -129,6 +129,7 @@ func (f *freelist) free(txid txid, p *page) {
 }
 
 // release moves all page ids for a transaction id (or older) to the freelist.
+// 移除 txid 相关的所有页面
 func (f *freelist) release(txid txid) {
 	m := make(pgids, 0)
 	for tid, ids := range f.pending {
@@ -144,6 +145,7 @@ func (f *freelist) release(txid txid) {
 }
 
 // rollback removes the pages from a given pending tx.
+//
 func (f *freelist) rollback(txid txid) {
 	// Remove page ids from cache.
 	for _, id := range f.pending[txid] {
@@ -163,7 +165,7 @@ func (f *freelist) freed(pgid pgid) bool {
 func (f *freelist) read(p *page) {
 	// If the page.count is at the max uint16 value (64k) then it's considered
 	// an overflow and the size of the freelist is stored as the first element.
-	idx, count := 0, int(p.count)
+	idx, count := 0, int(p.count) // uint16 是有限的, 所以超过的时候, 要占用 一个 int64的空间
 	if count == 0xFFFF {
 		idx = 1
 		count = int(((*[maxAllocSize]pgid)(unsafe.Pointer(&p.ptr)))[0])
@@ -185,9 +187,9 @@ func (f *freelist) read(p *page) {
 	f.reindex()
 }
 
-// write writes the page ids onto a freelist page. All free and pending ids are
-// saved to disk since in the event of a program crash, all pending ids will
-// become free.
+// write writes the page ids onto a freelist page.
+// All free and pending ids are saved to disk since in the event of a program crash,
+// all pending ids will become free.
 func (f *freelist) write(p *page) error {
 	// Combine the old free pgids and pgids waiting on an open transaction.
 
@@ -205,6 +207,7 @@ func (f *freelist) write(p *page) error {
 	} else {
 		p.count = 0xFFFF
 		((*[maxAllocSize]pgid)(unsafe.Pointer(&p.ptr)))[0] = pgid(lenids)
+		//noinspection ALL
 		f.copyall(((*[maxAllocSize]pgid)(unsafe.Pointer(&p.ptr)))[1:])
 	}
 

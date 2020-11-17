@@ -1,6 +1,7 @@
 package bolt
 
 import (
+	"log"
 	"reflect"
 	"sort"
 	"testing"
@@ -69,4 +70,9 @@ func TestPgids_merge_quick(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSelf(t *testing.T) {
+	log.Println(pageHeaderSize)
+	log.Printf("unknown<0x%02x>, 0x%02x, 0x%02x", freelistPageFlag, 0x100, 0x1)
 }

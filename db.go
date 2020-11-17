@@ -350,21 +350,21 @@ func (db *DB) init() error {
 	db.pageSize = os.Getpagesize()
 
 	// Create two meta pages on a buffer.
-	buf := make([]byte, db.pageSize*4) // 2 个元数据, 1个freelist 页面, 一个叶子节点界面
+	buf := make([]byte, db.pageSize*4) // 2 个元数据, 1个freelist 页面, 一个叶子节点页面, 也就是root节点页面
 	for i := 0; i < 2; i++ {
 		p := db.pageInBuffer(buf[:], pgid(i))
 		p.id = pgid(i)
 		p.flags = metaPageFlag // 元数据 page
 
 		// Initialize the meta page.
-		m := p.meta()
+		m := p.meta() // 返回指针, 对meta赋值, 就是对page赋值, 就是对node赋值
 		m.magic = magic
 		m.version = version
 		m.pageSize = uint32(db.pageSize)
 		m.freelist = 2
-		m.root = bucket{root: 3}
-		m.pgid = 4
-		m.txid = txid(i)
+		m.root = bucket{root: 3} // 第三个页面开始是数据节点, branch or leaf
+		m.pgid = 4               // 下一个可用页面的id?
+		m.txid = txid(i)         // 0 or 1
 		m.checksum = m.sum64()
 	}
 
@@ -1032,6 +1032,7 @@ func (m *meta) sum64() uint64 {
 }
 
 // _assert will panic with a given formatted message if the given condition is false.
+// 报panic
 func _assert(condition bool, msg string, v ...interface{}) {
 	if !condition {
 		panic(fmt.Sprintf("assertion failed: "+msg, v...))

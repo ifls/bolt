@@ -8,10 +8,10 @@ import (
 
 const (
 	// MaxKeySize is the maximum length of a key, in bytes.
-	MaxKeySize = 32768
+	MaxKeySize = 32768 // 0x8000 2^15
 
 	// MaxValueSize is the maximum length of a value, in bytes.
-	MaxValueSize = (1 << 31) - 2
+	MaxValueSize = (1 << 31) - 2 // 最大value 的长度
 )
 
 const (
@@ -35,12 +35,12 @@ const DefaultFillPercent = 0.5
 // Bucket represents a collection of key/value pairs inside the database.
 // 相当于命名空间, 代表一个完整的B+树
 type Bucket struct {
-	*bucket
+	*bucket                     // 内嵌
 	tx       *Tx                // the associated transaction
 	buckets  map[string]*Bucket // subbucket cache
 	page     *page              // inline page reference
-	rootNode *node              // materialized node for the root page.
-	nodes    map[pgid]*node     // node cache
+	rootNode *node              // 根节点 materialized具体化 node for the root page.
+	nodes    map[pgid]*node     // node cache 缓存 从页面 创建出来的 node
 
 	// Sets the threshold for filling nodes when they split. By default,
 	// the bucket will fill to 50% but it can be useful to increase this
@@ -102,6 +102,7 @@ func (b *Bucket) Cursor() *Cursor {
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (b *Bucket) Bucket(name []byte) *Bucket {
+	// 先从缓存取
 	if b.buckets != nil {
 		if child := b.buckets[string(name)]; child != nil {
 			return child
@@ -267,7 +268,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 func (b *Bucket) Get(key []byte) []byte {
 	k, v, flags := b.Cursor().seek(key)
 
-	// Return nil if this is a bucket.
+	// Return nil if this is a bucket. 防止返回一个 桶
 	if (flags & bucketLeafFlag) != 0 {
 		return nil
 	}
@@ -351,6 +352,7 @@ func (b *Bucket) SetSequence(v uint64) error {
 	// Materialize the root node if it hasn't been already so that the
 	// bucket will be saved during commit.
 	if b.rootNode == nil {
+		// 读取创建根节点
 		_ = b.node(b.root, nil)
 	}
 
@@ -370,6 +372,7 @@ func (b *Bucket) NextSequence() (uint64, error) {
 	// Materialize the root node if it hasn't been already so that the
 	// bucket will be saved during commit.
 	if b.rootNode == nil {
+		// 读取创建根节点
 		_ = b.node(b.root, nil)
 	}
 
@@ -643,6 +646,7 @@ func (b *Bucket) rebalance() {
 }
 
 // node creates a node from a page and associates it with a given parent.
+// 从 page 创建一个 内存里的node
 func (b *Bucket) node(pgid pgid, parent *node) *node {
 	_assert(b.nodes != nil, "nodes map expected")
 
@@ -662,11 +666,12 @@ func (b *Bucket) node(pgid pgid, parent *node) *node {
 	// Use the inline page if this is an inline bucket.
 	var p = b.page
 	if p == nil {
+		// 获取页面对象
 		p = b.tx.page(pgid)
 	}
 
 	// Read the page into the node and cache it.
-	n.read(p)
+	n.read(p) // 反序列化 page
 	b.nodes[pgid] = n
 
 	// Update statistics.
@@ -705,6 +710,7 @@ func (b *Bucket) dereference() {
 
 // pageNode returns the in-memory node, if it exists.
 // Otherwise returns the underlying page.
+// 返回 页面 或者节点
 func (b *Bucket) pageNode(id pgid) (*page, *node) {
 	// Inline buckets have a fake page embedded in their value so treat them
 	// differently. We'll return the rootNode (if available) or the fake page.

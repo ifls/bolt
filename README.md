@@ -15,25 +15,25 @@ and setting values. That's it.
 
 ## Project Status
 
-Bolt is stable, the API is fixed, and the file format is fixed. Full unit
-test coverage and randomized black box testing are used to ensure database
-consistency and thread safety. Bolt is currently used in high-load production
-environments serving databases as large as 1TB. Many companies such as
-Shopify and Heroku use Bolt-backed services every day.
+Bolt is stable, the API is fixed, and the file format is fixed. 
+Full unit test coverage and randomized black box testing are used to ensure database consistency and thread safety. 
+Bolt is currently used in high-load production environments serving databases as large as 1TB. 
+Many companies such as Shopify and Heroku use Bolt-backed services every day.
 
 ## A message from the author
 
 > The original goal of Bolt was to provide a simple pure Go key/value store and to
-> not bloat the code with extraneous features. To that end, the project has been
-> a success. However, this limited scope also means that the project is complete.
+> not bloa膨胀 the code with extraneous额外的 features. 
+> To that end 为了那个目的, the project has been a success. 
+> However, this limited scope also means that the project is complete.
 > 
-> Maintaining an open source database requires an immense amount of time and energy.
-> Changes to the code can have unintended and sometimes catastrophic effects so
+> Maintaining an open source database requires an immense巨大的 amount of time and energy 时间和精力.
+> Changes to the code can have unintended and sometimes catastrophic灾难性的 effects so
 > even simple changes require hours and hours of careful testing and validation.
 >
-> Unfortunately I no longer have the time or energy to continue this work. Bolt is
-> in a stable state and has years of successful production use. As such, I feel that
-> leaving it in its current state is the most prudent course of action.
+> Unfortunately I no longer have the time or energy to continue this work. 
+> Bolt is in a stable state and has years of successful production use. 
+> As such, I feel that leaving it in its current state is the most prudent谨慎的 course of action行动方针.
 >
 > If you are interested in using a more featureful version of Bolt, I suggest that
 > you look at the CoreOS fork called [bbolt](https://github.com/coreos/bbolt).
@@ -533,16 +533,17 @@ func createUser(accountID int, u *User) error {
 
 
 
-### Database backups
+### Database backups 备份
 
-Bolt is a single file so it's easy to backup. You can use the `Tx.WriteTo()`
-function to write a consistent view of the database to a writer. If you call
+Bolt is a single file so it's easy to backup. 
+You can use the `Tx.WriteTo()` function to write a consistent view of the database to a writer. If you call
 this from a read-only transaction, it will perform a hot backup and not block
 your other database reads and writes.
 
 By default, it will use a regular file handle which will utilize the operating
-system's page cache. See the [`Tx`](https://godoc.org/github.com/boltdb/bolt#Tx)
-documentation for information about optimizing for larger-than-RAM datasets.
+system's page cache. 
+See the [`Tx`](https://godoc.org/github.com/boltdb/bolt#Tx)
+documentation for information about optimizing for larger-than-RAM datasets. 超过内存大小时, 怎么搞??
 
 One common use case is to backup over HTTP so you can use tools like `cURL` to
 do database backups:
@@ -716,34 +717,38 @@ For more information on getting started with Bolt, check out the following artic
 ### Postgres, MySQL, & other relational databases
 
 Relational databases structure data into rows and are only accessible through
-the use of SQL. This approach provides flexibility in how you store and query
-your data but also incurs overhead in parsing and planning SQL statements. Bolt
-accesses all data by a byte slice key. This makes Bolt fast to read and write
+the use of SQL. 
+This approach provides flexibility灵活性 in how you store and query
+your data but also incurs overhead负担 in parsing and planning SQL statements. 
+
+Bolt accesses all data by a byte slice key. This makes Bolt fast to read and write
 data by key but provides no built-in support for joining values together.
 
 Most relational databases (with the exception of SQLite) are standalone servers
-that run separately from your application. This gives your systems
+that run separately from your application.  独立运行
+This gives your systems
 flexibility to connect multiple application servers to a single database
 server but also adds overhead in serializing and transporting data over the
-network. Bolt runs as a library included in your application so all data access
+network. 网络传输和序列化的开销
+
+Bolt runs as a library included in your application so all data access
 has to go through your application's process. This brings data closer to your
-application but limits multi-process access to the data.
+application but limits multi-process access to the data. 不能多进程访问
 
 
 ### LevelDB, RocksDB
 
-LevelDB and its derivatives (RocksDB, HyperLevelDB) are similar to Bolt in that
+LevelDB and its derivatives派生物 (RocksDB, HyperLevelDB) are similar to Bolt in that
 they are libraries bundled into the application, however, their underlying
-structure is a log-structured merge-tree (LSM tree). An LSM tree optimizes
-random writes by using a write ahead log and multi-tiered, sorted files called
-SSTables. Bolt uses a B+tree internally and only a single file. Both approaches
-have trade-offs.
+structure is a log-structured merge-tree (LSM tree). 
+An LSM tree optimizes random writes by using a write ahead log and multi-tiered, sorted files called SSTables. 
+Bolt uses a B+tree internally and only a single file. Both approaches have trade-offs.
 
 If you require a high random write throughput (>10,000 w/sec) or you need to use
-spinning disks then LevelDB could be a good choice. If your application is
-read-heavy or does a lot of range scans then Bolt could be a good choice.
+spinning disks then LevelDB could be a good choice. 
+If your application is read-heavy or does a lot of range scans then Bolt could be a good choice.
 
-One other important consideration is that LevelDB does not have transactions.
+One other important consideration is that LevelDB does not have transactions. leveldb 不支持事务acid
 It supports batch writing of key/values pairs and it supports read snapshots
 but it will not give you the ability to do a compare-and-swap operation safely.
 Bolt supports fully serializable ACID transactions.
@@ -751,33 +756,34 @@ Bolt supports fully serializable ACID transactions.
 
 ### LMDB
 
-Bolt was originally a port of LMDB so it is architecturally similar. Both use
-a B+tree, have ACID semantics with fully serializable transactions, and support
+Bolt was originally a port of LMDB so it is architecturally similar. 
+Both use a B+tree, have ACID semantics with fully serializable transactions, and support
 lock-free MVCC using a single writer and multiple readers.
 
-The two projects have somewhat diverged. LMDB heavily focuses on raw performance
-while Bolt has focused on simplicity and ease of use. For example, LMDB allows
-several unsafe actions such as direct writes for the sake of performance. Bolt
-opts to disallow actions which can leave the database in a corrupted state. The
-only exception to this in Bolt is `DB.NoSync`.
+The two projects have somewhat diverged分化. 
+LMDB heavily focuses on raw performance while Bolt has focused on simplicity and ease of use. 
+For example, LMDB allows several unsafe actions such as direct writes for the sake of performance. 
+Bolt opts to disallow actions which can leave the database in a corrupted state. 
+The only exception to this in Bolt is `DB.NoSync`.
 
 There are also a few differences in API. LMDB requires a maximum mmap size when
 opening an `mdb_env` whereas Bolt will handle incremental mmap resizing
-automatically. LMDB overloads the getter and setter functions with multiple
-flags whereas Bolt splits these specialized cases into their own functions.
+automatically. 
+LMDB overloads the getter and setter functions with multiple flags 
+whereas Bolt splits these specialized cases into their own functions.
 
 
-## Caveats & Limitations
+## Caveats & Limitations 警告和限制
 
 It's important to pick the right tool for the job and Bolt is no exception.
 Here are a few things to note when evaluating and using Bolt:
 
 * Bolt is good for read intensive workloads. Sequential write performance is
   also fast but random writes can be slow. You can use `DB.Batch()` or add a
-  write-ahead log to help mitigate this issue.
+  write-ahead log to help mitigate缓和 this issue.
 
-* Bolt uses a B+tree internally so there can be a lot of random page access.
-  SSDs provide a significant performance boost over spinning disks.
+* Bolt uses a B+tree internally so there can be a lot of random page access. 随机页访问
+  SSDs provide a significant performance boost over spinning disks. 用ssd更好
 
 * Try to avoid long running read transactions. Bolt uses copy-on-write so
   old pages cannot be reclaimed while an old transaction is using them.
@@ -905,7 +911,8 @@ Below is a list of public, open source projects that use Bolt:
 * [InfluxDB](https://influxdata.com) - Scalable datastore for metrics, events, and real-time analytics.
 * [Freehold](http://tshannon.bitbucket.org/freehold/) - An open, secure, and lightweight platform for your files and data.
 * [Prometheus Annotation Server](https://github.com/oliver006/prom_annotation_server) - Annotation server for PromDash & Prometheus service monitoring system.
-* [Consul](https://github.com/hashicorp/consul) - Consul is service discovery and configuration made easy. Distributed, highly available, and datacenter-aware.
+# * [Consul](https://github.com/hashicorp/consul) - Consul is service discovery and configuration made easy
+. Distributed, highly available, and datacenter-aware.
 * [Kala](https://github.com/ajvb/kala) - Kala is a modern job scheduler optimized to run on a single node. It is persistent, JSON over HTTP API, ISO 8601 duration notation, and dependent jobs.
 * [drive](https://github.com/odeke-em/drive) - drive is an unofficial Google Drive command line client for \*NIX operating systems.
 * [stow](https://github.com/djherbis/stow) -  a persistence manager for objects

@@ -8,6 +8,7 @@ import (
 )
 
 // node represents an in-memory, deserialized page.
+// 内存 反序列化的page
 type node struct {
 	bucket     *Bucket
 	isLeaf     bool // 是叶子还是 枝干节点
@@ -15,12 +16,13 @@ type node struct {
 	spilled    bool
 	key        []byte // 第一个key
 	pgid       pgid
-	parent     *node
-	children   nodes
+	parent     *node  // 父节点
+	children   nodes  // 子节点指针列表
 	inodes     inodes // []inode 存放kv数据
 }
 
 // root returns the top-level node this node is attached to.
+// 递归向上, 查找根节点
 func (n *node) root() *node {
 	if n.parent == nil {
 		return n
@@ -29,6 +31,7 @@ func (n *node) root() *node {
 }
 
 // minKeys returns the minimum number of inodes this node should have.
+//
 func (n *node) minKeys() int {
 	if n.isLeaf {
 		return 1
@@ -37,6 +40,7 @@ func (n *node) minKeys() int {
 }
 
 // size returns the size of the node after serialization.
+// size = pageHeader + (element + key + value) * (key count)
 func (n *node) size() int {
 	sz, elsz := pageHeaderSize, n.pageElementSize()
 	for i := 0; i < len(n.inodes); i++ {
@@ -70,6 +74,7 @@ func (n *node) pageElementSize() int {
 }
 
 // childAt returns the child node at a given index.
+// 返回 此节点的指定的 子节点
 func (n *node) childAt(index int) *node {
 	if n.isLeaf {
 		panic(fmt.Sprintf("invalid childAt(%d) on a leaf node", index))
@@ -89,12 +94,13 @@ func (n *node) numChildren() int {
 }
 
 // nextSibling returns the next node with the same parent.
+// 返回下一个兄弟节点
 func (n *node) nextSibling() *node {
 	if n.parent == nil {
 		return nil
 	}
 	index := n.parent.childIndex(n)
-	if index >= n.parent.numChildren()-1 {
+	if index >= n.parent.numChildren()-1 { // fast path
 		return nil
 	}
 	return n.parent.childAt(index + 1)
@@ -106,14 +112,14 @@ func (n *node) prevSibling() *node {
 		return nil
 	}
 	index := n.parent.childIndex(n)
-	if index == 0 {
+	if index == 0 { // fast path
 		return nil
 	}
 	return n.parent.childAt(index - 1)
 }
 
 // put inserts a key/value.
-// 将 kv 放到
+// 将 kv 放到 页面上
 func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 	if pgid >= n.bucket.tx.meta.pgid {
 		panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", pgid, n.bucket.tx.meta.pgid))
@@ -123,19 +129,19 @@ func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 		panic("put: zero-length new key")
 	}
 
-	// Find insertion index.
+	// Find insertion index. 用老的key查找 index
 	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })
 
 	// Add capacity and shift nodes if we don't have an exact match and need to insert.
 	exact := len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey)
-	if !exact {
+	if !exact { // 需要补充空间
 		n.inodes = append(n.inodes, inode{})
-		copy(n.inodes[index+1:], n.inodes[index:])
+		copy(n.inodes[index+1:], n.inodes[index:]) // 后移, 空出中间的位置
 	}
 
 	inode := &n.inodes[index]
 	inode.flags = flags
-	inode.key = newKey
+	inode.key = newKey // 这里只是切片, 真正的数据 放在哪里?
 	inode.value = value
 	inode.pgid = pgid
 	_assert(len(inode.key) > 0, "put: zero-length inode key")
@@ -146,22 +152,22 @@ func (n *node) del(key []byte) {
 	// Find index of key.
 	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, key) != -1 })
 
-	// Exit if the key isn't found.
+	// Exit if the key isn't found. 超界 或者 key不匹配
 	if index >= len(n.inodes) || !bytes.Equal(n.inodes[index].key, key) {
 		return
 	}
 
-	// Delete inode from the node.
+	// Delete inode from the node. 左移, 覆盖式删除
 	n.inodes = append(n.inodes[:index], n.inodes[index+1:]...)
 
 	// Mark the node as needing rebalancing.
-	n.unbalanced = true
+	n.unbalanced = true // 删除了数据 就需要重新平衡??
 }
 
 // read initializes the node from a page. 从page 解析数据
 func (n *node) read(p *page) {
 	n.pgid = p.id
-	n.isLeaf = ((p.flags & leafPageFlag) != 0)
+	n.isLeaf = (p.flags & leafPageFlag) != 0
 	n.inodes = make(inodes, int(p.count))
 
 	for i := 0; i < int(p.count); i++ {
@@ -181,7 +187,7 @@ func (n *node) read(p *page) {
 
 	// Save first key so we can find the node in the parent when we spill.
 	if len(n.inodes) > 0 {
-		n.key = n.inodes[0].key
+		n.key = n.inodes[0].key // 保存第一个key
 		_assert(len(n.key) > 0, "read: zero-length node key")
 	} else {
 		n.key = nil
@@ -208,13 +214,14 @@ func (n *node) write(p *page) {
 	}
 
 	// Loop over each item and write it to the page.
-	b := (*[maxAllocSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):]
+	b := (*[maxAllocSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):] // kvs 起始指针
 	for i, item := range n.inodes {
 		_assert(len(item.key) > 0, "write: zero-length inode key")
 
 		// Write the page element.
 		if n.isLeaf {
 			elem := p.leafPageElement(uint16(i))
+			// gap
 			elem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))
 			elem.flags = item.flags
 			elem.ksize = uint32(len(item.key))
@@ -510,10 +517,11 @@ func (n *node) rebalance() {
 
 // removes a node from the list of in-memory children.
 // This does not affect the inodes.
+// 根据指针值比较 判等?
 func (n *node) removeChild(target *node) {
 	for i, child := range n.children {
 		if child == target {
-			n.children = append(n.children[:i], n.children[i+1:]...)
+			n.children = append(n.children[:i], n.children[i+1:]...) // 左移
 			return
 		}
 	}
