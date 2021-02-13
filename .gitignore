@@ -2,3 +2,7 @@
 *.test
 *.swp
 /bin/
+
+/cmd/bolt/main
+
+.idea
