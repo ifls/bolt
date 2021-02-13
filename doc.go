@@ -38,6 +38,7 @@ Keys and values retrieved from the database are only valid for the life of the t
 When used outside the transaction,
 these byte slices can point to different data or can point to invalid memory which will cause a panic.
 
-
+// 参考源码分析 https://youjiali1995.github.io/storage/boltdb/
+// https://youjiali1995.github.io/categories/#storage
 */
 package bbolt
