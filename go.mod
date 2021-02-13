@@ -1,5 +1,5 @@
-module github.com/boltdb/bolt
+module go.etcd.io/bbolt
 
-go 1.13
+go 1.12
 
-require golang.org/x/sys v0.0.0-20210124154548-22da62e12c0c
+require golang.org/x/sys v0.0.0-20200202164722-d101bd2416d5
