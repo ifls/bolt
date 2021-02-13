@@ -28,7 +28,7 @@ const (
 type pgid uint64
 
 type page struct {
-	id       pgid
+	id       pgid // 页id
 	flags    uint16
 	count    uint16
 	overflow uint32

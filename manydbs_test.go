@@ -61,6 +61,7 @@ func createAndPutKeys(t *testing.T) {
 }
 
 func TestManyDBs(t *testing.T) {
+	t.SkipNow()
 	for i := 0; i < 100; i++ {
 		t.Run(fmt.Sprintf("%d", i), createAndPutKeys)
 	}
