@@ -7,7 +7,7 @@ import (
 	"unsafe"
 )
 
-const pageHeaderSize = unsafe.Sizeof(page{})
+const pageHeaderSize = unsafe.Sizeof(page{}) // 16B
 
 const minKeysPerPage = 2
 
@@ -97,7 +97,7 @@ func (p *page) hexdump(n int) {
 	fmt.Fprintf(os.Stderr, "%x\n", buf)
 }
 
-type pages []*page
+type pages []*page //按照id大小排序
 
 func (s pages) Len() int           { return len(s) }
 func (s pages) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
@@ -139,7 +139,7 @@ func (n *leafPageElement) value() []byte {
 }
 
 // PageInfo represents human readable information about a page.
-type PageInfo struct {
+type PageInfo struct { // 可以json 序列化
 	ID            int
 	Type          string
 	Count         int
@@ -152,7 +152,7 @@ func (s pgids) Len() int           { return len(s) }
 func (s pgids) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s pgids) Less(i, j int) bool { return s[i] < s[j] }
 
-// merge returns the sorted union of a and b.
+// merge returns the sorted union of a and b. 前提是a和b都是有序的
 func (a pgids) merge(b pgids) pgids {
 	// Return the opposite slice if one is nil.
 	if len(a) == 0 {
@@ -194,6 +194,7 @@ func mergepgids(dst, a, b pgids) {
 	// Continue while there are elements in the lead.
 	for len(lead) > 0 {
 		// Merge largest prefix of lead that is ahead of follow[0].
+		// 二分查找加速，而不是线性遍历两个有序数组合并
 		n := sort.Search(len(lead), func(i int) bool { return lead[i] > follow[0] })
 		merged = append(merged, lead[:n]...)
 		if n >= len(lead) {
