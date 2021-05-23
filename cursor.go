@@ -93,7 +93,7 @@ func (c *Cursor) Prev() (key []byte, value []byte) {
 			elem.index--
 			break
 		}
-		c.stack = c.stack[:i]
+		c.stack = c.stack[:i] // 在循环遍历中 更新 stack??
 	}
 
 	// If we've hit the end then return nil.
@@ -180,7 +180,7 @@ func (c *Cursor) first() {
 			pgid = ref.page.branchPageElement(uint16(ref.index)).pgid
 		}
 		p, n := c.bucket.pageNode(pgid)
-		c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
+		c.stack = append(c.stack, elemRef{page: p, node: n, index: 0}) // 一直找最左边的，index都是0
 	}
 }
 
@@ -232,7 +232,7 @@ func (c *Cursor) next() (key []byte, value []byte, flags uint32) {
 		// Otherwise start from where we left off in the stack and find the
 		// first element of the first leaf page.
 		c.stack = c.stack[:i+1]
-		c.first()
+		c.first() // 又去找 最左的？？？
 
 		// If this is an empty page then restart and move back up the stack.
 		// https://github.com/boltdb/bolt/issues/450
