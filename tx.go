@@ -29,7 +29,7 @@ type Tx struct {
 	root           Bucket
 	pages          map[pgid]*page
 	stats          TxStats
-	commitHandlers []func()
+	commitHandlers []func() // 保存事务提交时的回调函数
 
 	// WriteFlag specifies the flag for write-related methods like WriteTo().
 	// Tx opens the database file with the specified flag to copy the data.
@@ -94,7 +94,7 @@ func (tx *Tx) Stats() TxStats {
 	return tx.stats
 }
 
-// Bucket retrieves a bucket by name.
+// Bucket retrieves a bucket by name. 返回一个子桶
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (tx *Tx) Bucket(name []byte) *Bucket {
@@ -121,7 +121,7 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	return tx.root.DeleteBucket(name)
 }
 
-// ForEach executes a function for each bucket in the root.
+// ForEach executes a function for each bucket in the root. 能直接这样嵌套??
 // If the provided function returns an error then the iteration is stopped and
 // the error is returned to the caller.
 func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
@@ -517,6 +517,7 @@ func (tx *Tx) write() error {
 	for _, p := range tx.pages {
 		pages = append(pages, p)
 	}
+
 	// Clear out page cache early.
 	tx.pages = make(map[pgid]*page)
 	sort.Sort(pages)
@@ -585,7 +586,7 @@ func (tx *Tx) write() error {
 func (tx *Tx) writeMeta() error {
 	// Create a temporary buffer for the meta page.
 	buf := make([]byte, tx.db.pageSize)
-	p := tx.db.pageInBuffer(buf, 0)
+	p := tx.db.pageInBuffer(buf, 0) // []byte -> page*
 	tx.meta.write(p)
 
 	// Write the meta page to file.
@@ -593,6 +594,7 @@ func (tx *Tx) writeMeta() error {
 		return err
 	}
 	if !tx.db.NoSync || IgnoreNoSync {
+		// 持久化
 		if err := fdatasync(tx.db); err != nil {
 			return err
 		}
