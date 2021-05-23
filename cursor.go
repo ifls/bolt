@@ -151,12 +151,13 @@ func (c *Cursor) Delete() error {
 
 // seek moves the cursor to a given key and returns it.
 // If the key does not exist then the next key is used.
+// 移动到 [key, 无穷大) 范围内的第一个key
 func (c *Cursor) seek(seek []byte) (key []byte, value []byte, flags uint32) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
 
 	// Start from root page/node and traverse to correct page.
 	c.stack = c.stack[:0]
-	c.search(seek, c.bucket.root)
+	c.search(seek, c.bucket.root) // 从根页面开始搜索
 
 	// If this is a bucket then return a nil value.
 	return c.keyValue()
@@ -250,7 +251,7 @@ func (c *Cursor) search(key []byte, pgid pgid) {
 		panic(fmt.Sprintf("invalid page type: %d: %x", p.id, p.flags))
 	}
 	e := elemRef{page: p, node: n}
-	c.stack = append(c.stack, e)
+	c.stack = append(c.stack, e) // 预先保存元素引用
 
 	// If we're on a leaf page/node then find the specific node.
 	if e.isLeaf() {
@@ -258,6 +259,7 @@ func (c *Cursor) search(key []byte, pgid pgid) {
 		return
 	}
 
+	// 非叶子节点
 	if n != nil {
 		c.searchNode(key, n)
 		return
@@ -282,7 +284,7 @@ func (c *Cursor) searchNode(key []byte, n *node) {
 	c.stack[len(c.stack)-1].index = index
 
 	// Recursively search to the next page.
-	c.search(key, n.inodes[index].pgid)
+	c.search(key, n.inodes[index].pgid) //递归继续搜索，子页面
 }
 
 func (c *Cursor) searchPage(key []byte, p *page) {
@@ -299,7 +301,9 @@ func (c *Cursor) searchPage(key []byte, p *page) {
 		}
 		return ret != -1
 	})
-	if !exact && index > 0 {
+
+	// [key1, key, key4), [key4(index), key5)
+	if !exact && index > 0 { // 没有准确匹配， 说明index是 > key的元素的, key不属于key4,key5, 属于 [key1, key4)
 		index--
 	}
 	c.stack[len(c.stack)-1].index = index
@@ -315,8 +319,9 @@ func (c *Cursor) nsearch(key []byte) {
 
 	// If we have a node then search its inodes.
 	if n != nil {
+		// 二分查找, [key, +00) 的 最小索引
 		index := sort.Search(len(n.inodes), func(i int) bool {
-			return bytes.Compare(n.inodes[i].key, key) != -1
+			return bytes.Compare(n.inodes[i].key, key) != -1 // nkey >= key, key <= nodekey
 		})
 		e.index = index
 		return

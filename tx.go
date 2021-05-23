@@ -47,17 +47,17 @@ func (tx *Tx) init(db *DB) {
 
 	// Copy the meta page since it can be changed by the writer.
 	tx.meta = &meta{}
-	db.meta().copy(tx.meta)
+	db.meta().copy(tx.meta) // 拷贝元数据
 
 	// Copy over the root bucket.
 	tx.root = newBucket(tx)
 	tx.root.bucket = &bucket{}
-	*tx.root.bucket = tx.meta.root
+	*tx.root.bucket = tx.meta.root // 拷贝 根 桶
 
 	// Increment the transaction id and add a page cache for writable transactions.
 	if tx.writable {
 		tx.pages = make(map[pgid]*page)
-		tx.meta.txid += txid(1)
+		tx.meta.txid += txid(1) // 事务id ++
 	}
 }
 

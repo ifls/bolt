@@ -20,10 +20,16 @@ type pidSet map[pgid]struct{}
 // freelist represents a list of all pages that are available for allocation.
 // It also tracks pages that have been freed but are still in use by open transactions.
 type freelist struct {
-	freelistType   FreelistType                // freelist type
-	ids            []pgid                      // all free and available free page ids.
-	allocs         map[pgid]txid               // mapping of txid that allocated a pgid.
-	pending        map[txid]*txPending         // mapping of soon-to-be free page ids by tx.
+	freelistType FreelistType // freelist type
+
+	ids []pgid // all free and available free page ids.
+
+	allocs map[pgid]txid // mapping of txid that allocated a pgid.
+
+	// pending 部分需要单独记录主要是为了做 MVCC 的事务
+	pending map[txid]*txPending // mapping of soon-to-be free page ids by tx.
+
+	// map，o(1)查找
 	cache          map[pgid]bool               // fast lookup of all free and pending page ids.
 	freemaps       map[uint64]pidSet           // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
 	forwardMap     map[pgid]uint64             // key is start pgid, value is its span size
@@ -324,11 +330,13 @@ func (f *freelist) write(p *page) error {
 		var ids []pgid
 		data := unsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
 		unsafeSlice(unsafe.Pointer(&ids), data, l)
+		// 合并 allfree和 pending 页面，write 函数是在写事务提交时调用，写事务是串行的，因此 pending 中对应的写事务都已经提交。
 		f.copyall(ids)
 	} else {
-		p.count = 0xFFFF
+		p.count = 0xFFFF // 空闲页数量很多，会用更多页取保存空闲页数据
 		var ids []pgid
 		data := unsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
+		// {data,l+1,l+1} -> ids        为什么要+1??
 		unsafeSlice(unsafe.Pointer(&ids), data, l+1)
 		ids[0] = pgid(l)
 		f.copyall(ids[1:])

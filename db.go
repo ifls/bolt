@@ -48,7 +48,7 @@ type FreelistType string
 
 const (
 	// FreelistArrayType indicates backend freelist type is array
-	FreelistArrayType = FreelistType("array")
+	FreelistArrayType = FreelistType("array") // 默认选项是这个
 	// FreelistMapType indicates backend freelist type is hashmap
 	FreelistMapType = FreelistType("hashmap")
 )
@@ -273,7 +273,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		},
 	}
 
-	// Memory map the data file.
+	// Memory map the data file. 映射文件到内存
 	if err := db.mmap(options.InitialMmapSize); err != nil {
 		_ = db.close()
 		return nil, err
@@ -425,10 +425,13 @@ func (db *DB) mmapSize(size int) (int, error) {
 // init creates a new database file and initializes its meta pages.
 func (db *DB) init() error {
 	// Create two meta pages on a buffer.
+
+	// 初始化时， 4个页面， 2个meta, 一个 freelist，一个根node的叶子结点数据页
 	buf := make([]byte, db.pageSize*4)
 	for i := 0; i < 2; i++ {
-		p := db.pageInBuffer(buf[:], pgid(i))
+		p := db.pageInBuffer(buf[:], pgid(i)) // pgid从0开始
 		p.id = pgid(i)
+		// meta页 头的 count和overflow为0
 		p.flags = metaPageFlag
 
 		// Initialize the meta page.
@@ -436,10 +439,10 @@ func (db *DB) init() error {
 		m.magic = magic
 		m.version = version
 		m.pageSize = uint32(db.pageSize)
-		m.freelist = 2
-		m.root = bucket{root: 3}
+		m.freelist = 2           // 记录 freelist的起始页
+		m.root = bucket{root: 3} //第3页是根页面
 		m.pgid = 4
-		m.txid = txid(i)
+		m.txid = txid(i) // 分别是0 和1
 		m.checksum = m.sum64()
 	}
 
@@ -447,18 +450,19 @@ func (db *DB) init() error {
 	p := db.pageInBuffer(buf[:], pgid(2))
 	p.id = pgid(2)
 	p.flags = freelistPageFlag
-	p.count = 0
+	p.count = 0 // 一开始没有空闲页
 
 	// Write an empty leaf page at page 4.
 	p = db.pageInBuffer(buf[:], pgid(3))
 	p.id = pgid(3)
 	p.flags = leafPageFlag
-	p.count = 0
+	p.count = 0 // 空页， 元素数量为0
 
-	// Write the buffer to our data file.
+	// Write the buffer to our data file. 写到文件
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
 		return err
 	}
+	// 立即开始持久化
 	if err := fdatasync(db); err != nil {
 		return err
 	}
@@ -928,6 +932,7 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 	p.overflow = uint32(count - 1)
 
 	// Use pages from the freelist if they are available.
+	// 先从空闲列表拿 page id
 	if p.id = db.freelist.allocate(txid, count); p.id != 0 {
 		return p, nil
 	}
@@ -936,6 +941,7 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 	p.id = db.rwtx.meta.pgid
 	var minsz = int((p.id+pgid(count))+1) * db.pageSize
 	if minsz >= db.datasz {
+		// 映射更多内存
 		if err := db.mmap(minsz); err != nil {
 			return nil, fmt.Errorf("mmap allocate error: %s", err)
 		}
@@ -1111,16 +1117,17 @@ type Info struct {
 	PageSize int
 }
 
+// 元数据页 的body部分，写入文件时前面有page头
 type meta struct {
-	magic    uint32
-	version  uint32
-	pageSize uint32
+	magic    uint32 // 0xED0CDAED
+	version  uint32 // The data file format version.
+	pageSize uint32 // 该 db 页大小，通过 syscall.Getpagesize() 获取，通常为 4k
 	flags    uint32
-	root     bucket
-	freelist pgid
-	pgid     pgid
-	txid     txid
-	checksum uint64
+	root     bucket // 根节点
+	freelist pgid   // 空闲列表所存储的起始页 id
+	pgid     pgid   // 下一页会用到的page id，也即用到 page 的数量
+	txid     txid   //  事务版本号，用以实现事务相关
+	checksum uint64 // 用于检查meta页是否完整
 }
 
 // validate checks the marker bytes and version of the meta page to ensure it matches this binary.
@@ -1162,6 +1169,7 @@ func (m *meta) write(p *page) {
 // generates the checksum for the meta.
 func (m *meta) sum64() uint64 {
 	var h = fnv.New64a()
+	// 计算校验和的数据 不包括checksum字段本身
 	_, _ = h.Write((*[unsafe.Offsetof(meta{}.checksum)]byte)(unsafe.Pointer(m))[:])
 	return h.Sum64()
 }

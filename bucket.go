@@ -30,7 +30,7 @@ const DefaultFillPercent = 0.5
 type Bucket struct {
 	*bucket                     // 内嵌
 	tx       *Tx                // the associated transaction
-	buckets  map[string]*Bucket // subbucket cache
+	buckets  map[string]*Bucket // subbucket cache  子桶 是否名字 作为key 映射的
 	page     *page              // inline page reference
 	rootNode *node              // 根节点 materialized具体化 node for the root page.
 	nodes    map[pgid]*node     // node cache 缓存 从页面 创建出来的 node
@@ -294,15 +294,18 @@ func (b *Bucket) Put(key []byte, value []byte) error {
 
 	// Move cursor to correct position.
 	c := b.Cursor()
+	// 插入之前都强制查找一次, 直接找到叶子节点
 	k, _, flags := c.seek(key)
 
 	// Return an error if there is an existing key with a bucket value.
+	// key已经存在，就报错？？
 	if bytes.Equal(key, k) && (flags&bucketLeafFlag) != 0 {
 		return ErrIncompatibleValue
 	}
 
 	// Insert into node.
-	key = cloneBytes(key)
+	key = cloneBytes(key) // 为什么要clone一份？
+	// 直接插入到叶子节点
 	c.node().put(key, key, value, 0, 0)
 
 	return nil
@@ -527,16 +530,17 @@ func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, in
 }
 
 // spill writes all the nodes for this bucket to dirty pages.
-// 节点分裂
+// 节点分裂，事务写入提交的时候才会分裂
+// 该函数功能有二，将过大（尺寸大于一个 page）节点拆分、将节点写入脏页（dirty page）
 func (b *Bucket) spill() error {
-	// Spill all child buckets first.
+	// Spill all child buckets first. 自下而上，后序遍历，先递归调整子 bucket
 	for name, child := range b.buckets {
 		// If the child bucket is small enough and it has no child buckets then
 		// write it inline into the parent bucket's page. Otherwise spill it
 		// like a normal bucket and make the parent value a pointer to the page.
 		var value []byte
-		if child.inlineable() {
-			child.free()
+		if child.inlineable() { // 如果子 bucket 可以内嵌，则将其所有数据序列化后内嵌到父 bucket 相应叶子节点
+			child.free() // 释放页面
 			value = child.write()
 		} else {
 			if err := child.spill(); err != nil {
@@ -554,7 +558,7 @@ func (b *Bucket) spill() error {
 			continue
 		}
 
-		// Update parent node.
+		// Update parent node. 更新父节点 对应的值
 		var c = b.Cursor()
 		k, _, flags := c.seek([]byte(name))
 		if !bytes.Equal([]byte(name), k) {
@@ -571,6 +575,7 @@ func (b *Bucket) spill() error {
 		return nil
 	}
 
+	// 调整本 bucket
 	// Spill nodes.
 	if err := b.rootNode.spill(); err != nil {
 		return err
@@ -635,11 +640,14 @@ func (b *Bucket) write() []byte {
 }
 
 // rebalance attempts to balance all nodes.
-// 合并节点
+// 合并节点 该函数旨在将过小（key数太少或者总体尺寸太小）的节点合并到邻居节点上
 func (b *Bucket) rebalance() {
+	// 对所有node进行调整
 	for _, n := range b.nodes {
 		n.rebalance()
 	}
+
+	// 堆所有子bucket进行调整
 	for _, child := range b.buckets {
 		child.rebalance()
 	}
@@ -710,7 +718,7 @@ func (b *Bucket) dereference() {
 
 // pageNode returns the in-memory node, if it exists.
 // Otherwise returns the underlying page.
-// 返回 页面 或者节点
+// 返回 节点， 找不到就返回底层 的page
 func (b *Bucket) pageNode(id pgid) (*page, *node) {
 	// Inline buckets have a fake page embedded in their value so treat them
 	// differently. We'll return the rootNode (if available) or the fake page.

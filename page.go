@@ -15,7 +15,7 @@ const branchPageElementSize = unsafe.Sizeof(branchPageElement{})
 const leafPageElementSize = unsafe.Sizeof(leafPageElement{})
 
 const (
-	branchPageFlag   = 0x01
+	branchPageFlag   = 0x01 // 分支页，也就是非叶子节点
 	leafPageFlag     = 0x02
 	metaPageFlag     = 0x04
 	freelistPageFlag = 0x10
@@ -28,10 +28,14 @@ const (
 type pgid uint64
 
 type page struct {
-	id       pgid // 页id
-	flags    uint16
-	count    uint16
-	overflow uint32
+	id    pgid   // 页id
+	flags uint16 // 上面四种标志之一
+
+	// 如果是freelist页，这里保存的是 空闲页的数量
+	// 如果是leaf，count表示元素的数量， leafPageElement1,leafPageElement2,key1,val1,key2,val2,...
+	// 如果是branch，count表示元素的数量， branchPageElement1,branchPageElement2,key1,key2,...
+	count    uint16 // kv pair的数量，
+	overflow uint32 // 对应node的 溢出页的个数
 }
 
 // typ returns a human readable page type string used for debugging.
@@ -101,7 +105,8 @@ func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
 
 // branchPageElement represents a node on a branch page.
 type branchPageElement struct {
-	pos   uint32
+	pos uint32
+	// 非叶子节点不需要存flags？？
 	ksize uint32
 	pgid  pgid
 }
