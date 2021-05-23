@@ -11,10 +11,10 @@ const (
 	MaxKeySize = 32768 // 0x8000 2^15
 
 	// MaxValueSize is the maximum length of a value, in bytes.
-	MaxValueSize = (1 << 31) - 2 // 最大value 的长度
+	MaxValueSize = (1 << 31) - 2 // 最大value 的长度 0x7F FF FF FE
 )
 
-const bucketHeaderSize = int(unsafe.Sizeof(bucket{}))
+const bucketHeaderSize = int(unsafe.Sizeof(bucket{})) // 16B
 
 const (
 	minFillPercent = 0.1
@@ -30,7 +30,7 @@ const DefaultFillPercent = 0.5
 type Bucket struct {
 	*bucket                     // 内嵌
 	tx       *Tx                // the associated transaction
-	buckets  map[string]*Bucket // subbucket cache  子桶 是否名字 作为key 映射的
+	buckets  map[string]*Bucket // subbucket cache  子桶缓存 使用名字 作为key 映射的
 	page     *page              // inline page reference
 	rootNode *node              // 根节点 materialized具体化 node for the root page.
 	nodes    map[pgid]*node     // node cache 缓存 从页面 创建出来的 node
@@ -40,7 +40,7 @@ type Bucket struct {
 	// amount if you know that your write workloads are mostly append-only.
 	//
 	// This is non-persisted across transactions so it must be set in every Tx.
-	FillPercent float64
+	FillPercent float64 // 一个阈值
 }
 
 // bucket represents the on-file representation of a bucket.
@@ -49,7 +49,7 @@ type Bucket struct {
 // header. In the case of inline buckets, the "root" will be 0.
 type bucket struct {
 	root     pgid   // 根页面id page id of the bucket's root-level page
-	sequence uint64 // monotonically incrementing, used by NextSequence()
+	sequence uint64 // 单调递增 monotonically incrementing, used by NextSequence()
 }
 
 // newBucket returns a new bucket associated with a transaction.
@@ -91,7 +91,7 @@ func (b *Bucket) Cursor() *Cursor {
 	}
 }
 
-// Bucket retrieves a nested bucket by name.
+// Bucket retrieves a nested bucket by name. 返回子桶
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (b *Bucket) Bucket(name []byte) *Bucket {
@@ -114,6 +114,7 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 	// Otherwise create a bucket and cache it.
 	var child = b.openBucket(v)
 	if b.buckets != nil {
+		// 缓存起来
 		b.buckets[string(name)] = child
 	}
 
@@ -129,9 +130,9 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 	const unalignedMask = unsafe.Alignof(struct {
 		bucket
 		page
-	}{}) - 1
+	}{}) - 1 // 32 - 1 =  0x 00011111
 	unaligned := uintptr(unsafe.Pointer(&value[0]))&unalignedMask != 0
-	if unaligned {
+	if unaligned { // 地址对齐 32B
 		value = cloneBytes(value)
 	}
 
@@ -231,6 +232,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 
 	// Recursively delete all child buckets.
 	child := b.Bucket(key)
+	// 递归删除 所有 子桶和key
 	err := child.ForEach(func(k, v []byte) error {
 		if _, _, childFlags := child.Cursor().seek(k); (childFlags & bucketLeafFlag) != 0 {
 			if err := child.DeleteBucket(k); err != nil {
@@ -243,6 +245,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 		return err
 	}
 
+	// 删除自己
 	// Remove cached copy.
 	delete(b.buckets, string(key))
 
@@ -263,7 +266,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 func (b *Bucket) Get(key []byte) []byte {
 	k, v, flags := b.Cursor().seek(key)
 
-	// Return nil if this is a bucket. 防止返回一个 桶
+	// Return nil if this is a bucket. 防止返回一个桶， 如果是一个桶， 就不返回
 	if (flags & bucketLeafFlag) != 0 {
 		return nil
 	}
@@ -486,7 +489,7 @@ func (b *Bucket) Stats() BucketStats {
 // forEachPage iterates over every page in a bucket, including inline pages.
 func (b *Bucket) forEachPage(fn func(*page, int)) {
 	// If we have an inline page then just use that.
-	if b.page != nil {
+	if b.page != nil { // 桶里面只有一页时， 会inline这个page
 		fn(b.page, 0)
 		return
 	}
@@ -520,7 +523,7 @@ func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, in
 				b._forEachPageNode(elem.pgid, depth+1, fn)
 			}
 		}
-	} else {
+	} else { // n != nil
 		if !n.isLeaf {
 			for _, inode := range n.inodes {
 				b._forEachPageNode(inode.pgid, depth+1, fn)
@@ -688,6 +691,7 @@ func (b *Bucket) node(pgid pgid, parent *node) *node {
 	return n
 }
 
+// 释放所有page
 // free recursively frees all pages in the bucket.
 func (b *Bucket) free() {
 	if b.root == 0 {

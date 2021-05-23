@@ -22,7 +22,7 @@ const (
 )
 
 const (
-	bucketLeafFlag = 0x01
+	bucketLeafFlag = 0x01 // 叶子
 )
 
 type pgid uint64
