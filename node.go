@@ -13,15 +13,15 @@ type node struct {
 
 	isLeaf bool
 
-	unbalanced bool   // 是否需要进行合并
-	spilled    bool   // 是否需要进行拆分和落盘
+	unbalanced bool   // 是否需要进行合并或者说rebalance
+	spilled    bool   // 是否需要进行拆分并落盘
 	key        []byte // 所含第一个元素的 key
 	pgid       pgid
 
 	parent   *node
 	children nodes // []*node
 
-	inodes inodes // 所存元素的元信息；对于分支节点是 key+pgid 数组，对于叶子节点是 kv 数组
+	inodes inodes // 所存元素的信息；对于分支节点是 key+pgid 数组，对于叶子节点是 kv 数组
 }
 
 // root returns the top-level node this node is attached to.
@@ -40,7 +40,7 @@ func (n *node) minKeys() int {
 	return 2
 }
 
-// size returns the size of the node after serialization.
+// size returns the size of the node after serialization. 序列化到page要占用的空间
 func (n *node) size() int {
 	sz, elsz := pageHeaderSize, n.pageElementSize()
 	for i := 0; i < len(n.inodes); i++ {
@@ -78,6 +78,7 @@ func (n *node) childAt(index int) *node {
 	if n.isLeaf {
 		panic(fmt.Sprintf("invalid childAt(%d) on a leaf node", index))
 	}
+	// 可能需要临时从page里读取一个node
 	return n.bucket.node(n.inodes[index].pgid, n)
 }
 
@@ -155,7 +156,7 @@ func (n *node) del(key []byte) {
 		return
 	}
 
-	// Delete inode from the node.
+	// Delete inode from the node. 前移
 	n.inodes = append(n.inodes[:index], n.inodes[index+1:]...)
 
 	// Mark the node as needing rebalancing.
@@ -278,7 +279,7 @@ func (n *node) split(pageSize uintptr) []*node {
 func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	// Ignore the split if the page doesn't have at least enough nodes for
 	// two pages or if the nodes can fit in a single page.
-	if len(n.inodes) <= (minKeysPerPage*2) || n.sizeLessThan(pageSize) {
+	if len(n.inodes) <= (minKeysPerPage*2) || n.sizeLessThan(pageSize) { //一页 就放得下， 说明不需要分页
 		return n, nil
 	}
 
@@ -523,6 +524,7 @@ func (n *node) rebalance() {
 
 // removes a node from the list of in-memory children.
 // This does not affect the inodes.
+// O(n) 遍历
 func (n *node) removeChild(target *node) {
 	for i, child := range n.children {
 		if child == target {
@@ -532,7 +534,7 @@ func (n *node) removeChild(target *node) {
 	}
 }
 
-// dereference causes the node to copy all its inode key/value references to heap memory.
+// dereference causes the node to copy all its inode key/value references to heap memory. 将kv的内存重新分配到堆上
 // This is required when the mmap is reallocated so inodes are not pointing to stale data.
 func (n *node) dereference() {
 	if n.key != nil {
@@ -567,6 +569,7 @@ func (n *node) dereference() {
 // free adds the node's underlying page to the freelist.
 func (n *node) free() {
 	if n.pgid != 0 {
+		// 释放pageid
 		n.bucket.tx.db.freelist.free(n.bucket.tx.meta.txid, n.bucket.tx.page(n.pgid))
 		n.pgid = 0
 	}
@@ -604,7 +607,7 @@ type nodes []*node
 func (s nodes) Len() int      { return len(s) }
 func (s nodes) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 func (s nodes) Less(i, j int) bool {
-	return bytes.Compare(s[i].inodes[0].key, s[j].inodes[0].key) == -1 // i, j
+	return bytes.Compare(s[i].inodes[0].key, s[j].inodes[0].key) == -1 // i < j
 }
 
 // inode represents an internal node inside of a node.
