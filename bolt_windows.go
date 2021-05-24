@@ -51,7 +51,7 @@ func flock(db *DB, exclusive bool, timeout time.Duration) error {
 	if timeout != 0 {
 		t = time.Now()
 	}
-	var flag uint32 = flagLockFailImmediately
+	var flag uint32 = flagLockFailImmediately // 不阻塞
 	if exclusive {
 		flag |= flagLockExclusive
 	}

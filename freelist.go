@@ -6,8 +6,7 @@ import (
 	"unsafe"
 )
 
-// txPending holds a list of pgids and corresponding allocation txns
-// that are pending to be freed.
+// txPending holds a list of pgids and corresponding allocation txns that are pending to be freed.
 type txPending struct {
 	ids              []pgid
 	alloctx          []txid // txids allocating the ids
@@ -24,18 +23,19 @@ type freelist struct {
 
 	ids []pgid // all free and available free page ids.
 
+	// 记录被分配给事务的页面
 	allocs map[pgid]txid // mapping of txid that allocated a pgid.
 
 	// pending 部分需要单独记录主要是为了做 MVCC 的事务
 	pending map[txid]*txPending // mapping of soon-to-be free page ids by tx.
 
-	// map，o(1)查找
+	// map, o(1)查找
 	cache          map[pgid]bool               // fast lookup of all free and pending page ids.
 	freemaps       map[uint64]pidSet           // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
 	forwardMap     map[pgid]uint64             // key is start pgid, value is its span size
 	backwardMap    map[pgid]uint64             // key is end pgid, value is its span size
 	allocate       func(txid txid, n int) pgid // the freelist allocate func
-	free_count     func() int                  // the function which gives you free page number
+	freeCount      func() int                  // the function which gives you free page number
 	mergeSpans     func(ids pgids)             // the mergeSpan func
 	getFreePageIDs func() []pgid               // get free pgids func
 	readIDs        func(pgids []pgid)          // readIDs func reads list of pages and init the freelist
@@ -55,13 +55,13 @@ func newFreelist(freelistType FreelistType) *freelist {
 
 	if freelistType == FreelistMapType {
 		f.allocate = f.hashmapAllocate
-		f.free_count = f.hashmapFreeCount
+		f.freeCount = f.hashmapFreeCount
 		f.mergeSpans = f.hashmapMergeSpans
 		f.getFreePageIDs = f.hashmapGetFreePageIDs
 		f.readIDs = f.hashmapReadIDs
 	} else {
 		f.allocate = f.arrayAllocate
-		f.free_count = f.arrayFreeCount
+		f.freeCount = f.arrayFreeCount
 		f.mergeSpans = f.arrayMergeSpans
 		f.getFreePageIDs = f.arrayGetFreePageIDs
 		f.readIDs = f.arrayReadIDs
@@ -75,14 +75,14 @@ func (f *freelist) size() int {
 	n := f.count()
 	if n >= 0xFFFF {
 		// The first element will be used to store the count. See freelist.write.
-		n++
+		n++ // 多了一个 8B 保存 page count
 	}
 	return int(pageHeaderSize) + (int(unsafe.Sizeof(pgid(0))) * n)
 }
 
 // count returns count of pages on the freelist
 func (f *freelist) count() int {
-	return f.free_count() + f.pending_count()
+	return f.freeCount() + f.pending_count()
 }
 
 // arrayFreeCount returns count of free pages(array version)
@@ -124,7 +124,7 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 		}
 
 		// Reset initial page if this is not contiguous.
-		if previd == 0 || id-previd != 1 {
+		if previd == 0 || id-previd != 1 { // 第一次, 或者 非连续
 			initial = id
 		}
 
@@ -134,10 +134,11 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 			// and just adjust the existing slice. This will use extra memory
 			// temporarily but the append() in free() will realloc the slice
 			// as is necessary.
+			// 中间一块, 被分配出去了
 			if (i + 1) == n {
 				f.ids = f.ids[i+1:]
 			} else {
-				copy(f.ids[i-n+1:], f.ids[i+1:])
+				copy(f.ids[i-n+1:], f.ids[i+1:]) // 前移
 				f.ids = f.ids[:len(f.ids)-n]
 			}
 
@@ -145,7 +146,7 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 			for i := pgid(0); i < pgid(n); i++ {
 				delete(f.cache, initial+i)
 			}
-			f.allocs[initial] = txid
+			f.allocs[initial] = txid // 在起始pgid 记录 txid
 			return initial
 		}
 
@@ -167,25 +168,32 @@ func (f *freelist) free(txid txid, p *page) {
 		txp = &txPending{}
 		f.pending[txid] = txp
 	}
+
 	allocTxid, ok := f.allocs[p.id]
 	if ok {
 		delete(f.allocs, p.id)
-	} else if (p.flags & freelistPageFlag) != 0 {
+	} else if (p.flags & freelistPageFlag) != 0 { // 此页是 freelist 页
 		// Freelist is always allocated by prior tx.
 		allocTxid = txid - 1
 	}
 
+	// 分配出去的页是连续的
 	for id := p.id; id <= p.id+pgid(p.overflow); id++ {
 		// Verify that page is not already free.
 		if f.cache[id] {
 			panic(fmt.Sprintf("page %d already freed", id))
 		}
+
 		// Add to the freelist and cache.
-		txp.ids = append(txp.ids, id)
+		txp.ids = append(txp.ids, id) // 放回空闲页
+
 		txp.alloctx = append(txp.alloctx, allocTxid)
-		f.cache[id] = true
+
+		f.cache[id] = true // 去重
 	}
 }
+
+// release 和 free 有什么区别??
 
 // release moves all page ids for a transaction id (or older) to the freelist.
 func (f *freelist) release(txid txid) {
@@ -198,7 +206,7 @@ func (f *freelist) release(txid txid) {
 			delete(f.pending, tid)
 		}
 	}
-	f.mergeSpans(m)
+	f.mergeSpans(m) // 放回 空闲列表
 }
 
 // releaseRange moves pending pages allocated within an extent [begin,end] to the free list.
@@ -235,12 +243,13 @@ func (f *freelist) releaseRange(begin, end txid) {
 }
 
 // rollback removes the pages from a given pending tx.
-func (f *freelist) rollback(txid txid) {
+func (f *freelist) rollback(txid txid) { // 释放 一个tx的所有页面, 因为事务回滚了
 	// Remove page ids from cache.
 	txp := f.pending[txid]
 	if txp == nil {
 		return
 	}
+
 	var m pgids
 	for i, pgid := range txp.ids {
 		delete(f.cache, pgid)
@@ -271,6 +280,7 @@ func (f *freelist) read(p *page) {
 	if (p.flags & freelistPageFlag) == 0 {
 		panic(fmt.Sprintf("invalid freelist page: %d, page type is %s", p.id, p.typ()))
 	}
+
 	// If the page.count is at the max uint16 value (64k) then it's considered
 	// an overflow and the size of the freelist is stored as the first element.
 	var idx, count = 0, int(p.count)
@@ -288,6 +298,7 @@ func (f *freelist) read(p *page) {
 		f.ids = nil
 	} else {
 		var ids []pgid
+		// count 之后是 pgid 数组
 		data := unsafeIndex(unsafe.Pointer(p), unsafe.Sizeof(*p), unsafe.Sizeof(ids[0]), idx)
 		unsafeSlice(unsafe.Pointer(&ids), data, count)
 
@@ -333,10 +344,10 @@ func (f *freelist) write(p *page) error {
 		// 合并 allfree和 pending 页面，write 函数是在写事务提交时调用，写事务是串行的，因此 pending 中对应的写事务都已经提交。
 		f.copyall(ids)
 	} else {
-		p.count = 0xFFFF // 空闲页数量很多，会用更多页取保存空闲页数据
+		p.count = 0xFFFF // 空闲页数量很多, 会用更多页取保存空闲页数据
 		var ids []pgid
 		data := unsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p))
-		// {data,l+1,l+1} -> ids        为什么要+1??
+		// {data,l+1,l+1} -> ids        为什么要+1, 第一个元素用来存长度
 		unsafeSlice(unsafe.Pointer(&ids), data, l+1)
 		ids[0] = pgid(l)
 		f.copyall(ids[1:])
@@ -391,6 +402,7 @@ func (f *freelist) noSyncReload(pgids []pgid) {
 	f.readIDs(a)
 }
 
+// 重建 map 索引
 // reindex rebuilds the free cache based on available and pending free lists.
 func (f *freelist) reindex() {
 	ids := f.getFreePageIDs()

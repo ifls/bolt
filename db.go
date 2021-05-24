@@ -123,22 +123,28 @@ type DB struct {
 	path     string
 	openFile func(string, int, os.FileMode) (*os.File, error)
 	file     *os.File
-	dataref  []byte // mmap'ed readonly, write throws SEGV
-	data     *[maxMapSize]byte
-	datasz   int
-	filesz   int // current on disk file size
-	meta0    *meta
-	meta1    *meta
+
+	// mmap 映射进来的内片
+	dataref []byte // mmap'ed readonly, write throws SEGV
+	data    *[maxMapSize]byte
+	datasz  int
+
+	filesz int // current on disk file size
+
+	// 缓存元数据
+	meta0 *meta
+	meta1 *meta
+
 	pageSize int
 	opened   bool
-	rwtx     *Tx
-	txs      []*Tx
+	rwtx     *Tx   // 单写, 唯一的写事务
+	txs      []*Tx // 保存 当前正在运行的读事务
 	stats    Stats
 
 	freelist     *freelist
 	freelistLoad sync.Once
 
-	pagePool sync.Pool
+	pagePool sync.Pool // 页面缓存
 
 	batchMu sync.Mutex
 	batch   *batch
@@ -200,6 +206,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		db.readOnly = true
 	}
 
+	// 可以用于 测试 hook
 	db.openFile = options.OpenFile
 	if db.openFile == nil {
 		db.openFile = os.OpenFile
@@ -213,10 +220,10 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 	db.path = db.file.Name()
 
-	// Lock file so that other processes using Bolt in read-write mode cannot
-	// use the database  at the same time. This would cause corruption since
-	// the two processes would write meta pages and free pages separately.
+	// Lock file so that other processes using Bolt in read-write mode cannot use the database  at the same time.
+	// This would cause corruption since the two processes would write meta pages and free pages separately.
 	// The database file is locked exclusively (only one process can grab the lock)
+	// 文件锁, 防止多个进程写, 破坏一致性
 	// if !options.ReadOnly.
 	// The database file is locked using the shared lock (more than one process may
 	// hold a lock at the same time) otherwise (options.ReadOnly is set).
@@ -239,14 +246,15 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		return nil, err
 	} else if info.Size() == 0 {
 		// Initialize new files with meta pages.
+		// 分配4个page, 然后持久化
 		if err := db.init(); err != nil {
 			// clean up file descriptor on initialization fail
 			_ = db.close()
 			return nil, err
 		}
 	} else {
-		// Read the first meta page to determine the page size.
-		var buf [0x1000]byte
+		// Read the first meta page to determine the page size. 读取第一个元数据page 确认之前的 数据page的大小
+		var buf [0x1000]byte // 4KB
 		// If we can't read the page size, but can read a page, assume
 		// it's the same as the OS or one given -- since that's how the
 		// page size was chosen in the first place.
@@ -315,7 +323,7 @@ func (db *DB) loadFreelist() {
 			// Read free list from freelist page.
 			db.freelist.read(db.page(db.meta().freelist))
 		}
-		db.stats.FreePageN = db.freelist.free_count()
+		db.stats.FreePageN = db.freelist.freeCount()
 	})
 }
 
@@ -333,7 +341,7 @@ func (db *DB) mmap(minsz int) error {
 	if err != nil {
 		return fmt.Errorf("mmap stat error: %s", err)
 	} else if int(info.Size()) < db.pageSize*2 {
-		return fmt.Errorf("file size too small")
+		return fmt.Errorf("file size too small") // 说明没有两个 meta页, 一个db 初始化的时候 就有四页的
 	}
 
 	// Ensure the size is at least the minimum size.
@@ -341,6 +349,8 @@ func (db *DB) mmap(minsz int) error {
 	if size < minsz {
 		size = minsz
 	}
+
+	// 确定合适的存入内存的大小
 	size, err = db.mmapSize(size)
 	if err != nil {
 		return err
@@ -348,14 +358,16 @@ func (db *DB) mmap(minsz int) error {
 
 	// Dereference all mmap references before unmapping.
 	if db.rwtx != nil {
-		db.rwtx.root.dereference()
+		db.rwtx.root.dereference() // 全部数据重新分配内存到堆上的其他地方
 	}
 
+	// 释放映射的内存
 	// Unmap existing data before continuing.
 	if err := db.munmap(); err != nil {
 		return err
 	}
 
+	// 重新映射进来
 	// Memory-map the data file as a byte slice.
 	if err := mmap(db, size); err != nil {
 		return err
@@ -611,6 +623,8 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t := &Tx{writable: true}
 	t.init(db)
 	db.rwtx = t
+
+	// 释放只读事务的 page
 	db.freePages()
 	return t, nil
 }
@@ -733,12 +747,12 @@ func (db *DB) View(fn func(*Tx) error) error {
 		return err
 	}
 
-	return t.Rollback()
+	return t.Rollback() // 只读事务, 不需要提交, 回滚就是关闭
 }
 
 // Batch calls fn as part of a batch. It behaves similar to Update,
 // except:
-//
+// 多个fn 会合并在一个事务里进行批处理后, 再一次提交
 // 1. concurrent Batch calls can be combined into a single Bolt
 // transaction.
 //
@@ -972,6 +986,7 @@ func (db *DB) grow(sz int) error {
 	// https://github.com/boltdb/bolt/issues/284
 	if !db.NoGrowSync && !db.readOnly {
 		if runtime.GOOS != "windows" {
+			// truncate 可以 增加空间??
 			if err := db.file.Truncate(int64(sz)); err != nil {
 				return fmt.Errorf("file resize error: %s", err)
 			}
@@ -990,7 +1005,7 @@ func (db *DB) IsReadOnly() bool {
 }
 
 func (db *DB) freepages() []pgid {
-	tx, err := db.beginTx()
+	tx, err := db.beginTx() // 只读事务
 	defer func() {
 		err = tx.Rollback()
 		if err != nil {

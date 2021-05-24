@@ -187,21 +187,21 @@ func TestFreelistHashmap_allocate(t *testing.T) {
 	f.readIDs(ids)
 
 	f.allocate(1, 3)
-	if x := f.free_count(); x != 6 {
+	if x := f.freeCount(); x != 6 {
 		t.Fatalf("exp=6; got=%v", x)
 	}
 
 	f.allocate(1, 2)
-	if x := f.free_count(); x != 4 {
+	if x := f.freeCount(); x != 4 {
 		t.Fatalf("exp=4; got=%v", x)
 	}
 	f.allocate(1, 1)
-	if x := f.free_count(); x != 3 {
+	if x := f.freeCount(); x != 3 {
 		t.Fatalf("exp=3; got=%v", x)
 	}
 
 	f.allocate(1, 0)
-	if x := f.free_count(); x != 3 {
+	if x := f.freeCount(); x != 3 {
 		t.Fatalf("exp=3; got=%v", x)
 	}
 }

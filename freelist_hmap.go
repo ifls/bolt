@@ -70,7 +70,7 @@ func (f *freelist) hashmapReadIDs(pgids []pgid) {
 
 // hashmapGetFreePageIDs returns the sorted free page ids
 func (f *freelist) hashmapGetFreePageIDs() []pgid {
-	count := f.free_count()
+	count := f.freeCount()
 	if count == 0 {
 		return nil
 	}

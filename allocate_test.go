@@ -19,7 +19,7 @@ func TestTx_allocatePageStats(t *testing.T) {
 	}
 
 	prePageCnt := tx.Stats().PageCount
-	allocateCnt := f.free_count()
+	allocateCnt := f.freeCount()
 
 	if _, err := tx.allocate(allocateCnt); err != nil {
 		t.Fatal(err)
