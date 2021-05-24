@@ -323,7 +323,7 @@ func (db *DB) loadFreelist() {
 			// Read free list from freelist page.
 			db.freelist.read(db.page(db.meta().freelist))
 		}
-		db.stats.FreePageN = db.freelist.free_count()
+		db.stats.FreePageN = db.freelist.freeCount()
 	})
 }
 

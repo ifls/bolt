@@ -6,8 +6,7 @@ import (
 	"unsafe"
 )
 
-// txPending holds a list of pgids and corresponding allocation txns
-// that are pending to be freed.
+// txPending holds a list of pgids and corresponding allocation txns that are pending to be freed.
 type txPending struct {
 	ids              []pgid
 	alloctx          []txid // txids allocating the ids
@@ -29,13 +28,13 @@ type freelist struct {
 	// pending 部分需要单独记录主要是为了做 MVCC 的事务
 	pending map[txid]*txPending // mapping of soon-to-be free page ids by tx.
 
-	// map，o(1)查找
+	// map, o(1)查找
 	cache          map[pgid]bool               // fast lookup of all free and pending page ids.
 	freemaps       map[uint64]pidSet           // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
 	forwardMap     map[pgid]uint64             // key is start pgid, value is its span size
 	backwardMap    map[pgid]uint64             // key is end pgid, value is its span size
 	allocate       func(txid txid, n int) pgid // the freelist allocate func
-	free_count     func() int                  // the function which gives you free page number
+	freeCount      func() int                  // the function which gives you free page number
 	mergeSpans     func(ids pgids)             // the mergeSpan func
 	getFreePageIDs func() []pgid               // get free pgids func
 	readIDs        func(pgids []pgid)          // readIDs func reads list of pages and init the freelist
@@ -55,13 +54,13 @@ func newFreelist(freelistType FreelistType) *freelist {
 
 	if freelistType == FreelistMapType {
 		f.allocate = f.hashmapAllocate
-		f.free_count = f.hashmapFreeCount
+		f.freeCount = f.hashmapFreeCount
 		f.mergeSpans = f.hashmapMergeSpans
 		f.getFreePageIDs = f.hashmapGetFreePageIDs
 		f.readIDs = f.hashmapReadIDs
 	} else {
 		f.allocate = f.arrayAllocate
-		f.free_count = f.arrayFreeCount
+		f.freeCount = f.arrayFreeCount
 		f.mergeSpans = f.arrayMergeSpans
 		f.getFreePageIDs = f.arrayGetFreePageIDs
 		f.readIDs = f.arrayReadIDs
@@ -82,7 +81,7 @@ func (f *freelist) size() int {
 
 // count returns count of pages on the freelist
 func (f *freelist) count() int {
-	return f.free_count() + f.pending_count()
+	return f.freeCount() + f.pending_count()
 }
 
 // arrayFreeCount returns count of free pages(array version)
