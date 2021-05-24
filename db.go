@@ -137,8 +137,8 @@ type DB struct {
 
 	pageSize int
 	opened   bool
-	rwtx     *Tx
-	txs      []*Tx
+	rwtx     *Tx   // 单写, 唯一的写事务
+	txs      []*Tx // 保存 当前正在运行的读事务
 	stats    Stats
 
 	freelist     *freelist
@@ -623,6 +623,8 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t := &Tx{writable: true}
 	t.init(db)
 	db.rwtx = t
+
+	// 释放只读事务的 page
 	db.freePages()
 	return t, nil
 }
@@ -745,12 +747,12 @@ func (db *DB) View(fn func(*Tx) error) error {
 		return err
 	}
 
-	return t.Rollback()
+	return t.Rollback() // 只读事务, 不需要提交, 回滚就是关闭
 }
 
 // Batch calls fn as part of a batch. It behaves similar to Update,
 // except:
-//
+// 多个fn 会合并在一个事务里进行批处理后, 再一次提交
 // 1. concurrent Batch calls can be combined into a single Bolt
 // transaction.
 //
@@ -984,6 +986,7 @@ func (db *DB) grow(sz int) error {
 	// https://github.com/boltdb/bolt/issues/284
 	if !db.NoGrowSync && !db.readOnly {
 		if runtime.GOOS != "windows" {
+			// truncate 可以 增加空间??
 			if err := db.file.Truncate(int64(sz)); err != nil {
 				return fmt.Errorf("file resize error: %s", err)
 			}
@@ -1002,7 +1005,7 @@ func (db *DB) IsReadOnly() bool {
 }
 
 func (db *DB) freepages() []pgid {
-	tx, err := db.beginTx()
+	tx, err := db.beginTx() // 只读事务
 	defer func() {
 		err = tx.Rollback()
 		if err != nil {
