@@ -414,7 +414,7 @@ func (n *node) spill() error {
 // size is below a threshold or if there are not enough keys.
 // 该函数旨在将过小（key数太少或者总体尺寸太小）的节点合并到邻居节点上
 func (n *node) rebalance() {
-	// 防重复，也可以控制按需调整
+	// 防重复平衡，也可以控制支持按需调整
 	if !n.unbalanced { // 只有 node.del() 的调用才会导致 n.unbalanced 被标记
 		return
 	}
@@ -426,12 +426,13 @@ func (n *node) rebalance() {
 
 	// Ignore if node is above threshold (25%) and has enough keys.
 	var threshold = n.bucket.tx.db.pageSize / 4
-	// 元素足够多，不需要被合并
+	// 且页面 > 1KB, 元素足够，不需要被合并
 	if n.size() > threshold && len(n.inodes) > n.minKeys() {
 		return
 	}
 
 	// Root node has special handling.
+	// 重新平衡递归向下走不会进入，递归向上的时候，可能会进入
 	if n.parent == nil { //根节点， 如果该节点是根节点，且只有一个孩子节点，则将其和其唯一的孩子合并。
 		// If root node is a branch and only has one node then collapse it.
 		if !n.isLeaf && len(n.inodes) == 1 {
@@ -442,6 +443,7 @@ func (n *node) rebalance() {
 			n.children = child.children
 
 			// Reparent all child nodes being moved.
+			// 所有子节点 重新设置父节点
 			for _, inode := range n.inodes {
 				if child, ok := n.bucket.nodes[inode.pgid]; ok {
 					child.parent = n
@@ -450,28 +452,30 @@ func (n *node) rebalance() {
 
 			// Remove old child.
 			child.parent = nil
-			delete(n.bucket.nodes, child.pgid)
-			child.free()
+			delete(n.bucket.nodes, child.pgid) // 删除子节点
+			child.free()                       // 释放pgid，以便重用
 		}
 
 		return
 	}
 
 	// If node has no keys then just remove it.
-	// 节点没有数据就执行移除
+	// 当前 node 没有数据就 直接移除
 	if n.numChildren() == 0 {
 		n.parent.del(n.key)
 		n.parent.removeChild(n)
 		delete(n.bucket.nodes, n.pgid)
 		n.free()
-		n.parent.rebalance()
+		n.parent.rebalance() // 父节点少了一个key，触发判断重新平衡
 		return
 	}
 
 	_assert(n.parent.numChildren() > 1, "parent must have at least 2 children")
+	// 保证有2个以上兄弟节点，怎么保证的??
+
+	// 都是将 右边的节点合到左边
 
 	// Destination node is right sibling if idx == 0, otherwise left sibling.
-	// 将左节点合并到此节点。
 	// 如果该节点是第一个节点，没左邻，则将右邻节点合并过来。
 	var target *node
 	var useNextSibling = (n.parent.childIndex(n) == 0)
@@ -481,8 +485,10 @@ func (n *node) rebalance() {
 		target = n.prevSibling()
 	}
 
+	// 如果右节点本身很大呢??
+	// 吃掉了右节点，那么上面的for遍历子节点会发生什么??
 	// If both this node and the target node are too small then merge them.
-	if useNextSibling {
+	if useNextSibling { // 右节点合并到左节点
 		// Reparent all child nodes being moved.
 		// 更新右节点的子节点
 		for _, inode := range target.inodes {

@@ -108,6 +108,8 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 
 	// Return nil if the key doesn't exist or it is not a bucket.
 	if !bytes.Equal(name, k) || (flags&bucketLeafFlag) == 0 {
+		// key 不相等
+		// 或者 key 相等，但是value不是 一个桶
 		return nil
 	}
 
@@ -121,8 +123,8 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 	return child
 }
 
-// Helper method that re-interprets a sub-bucket value
-// from a parent into a Bucket
+// Helper method that re-interprets a sub-bucket value from a parent into a Bucket
+// 把一段 value 重新 解释为 一个 桶
 func (b *Bucket) openBucket(value []byte) *Bucket {
 	var child = newBucket(b.tx)
 
@@ -171,9 +173,12 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 
 	// Return an error if there is an existing key.
 	if bytes.Equal(key, k) {
+		// 是 子桶
 		if (flags & bucketLeafFlag) != 0 {
 			return nil, ErrBucketExists
 		}
+
+		// 不是子桶， 而是value
 		return nil, ErrIncompatibleValue
 	}
 
@@ -183,11 +188,11 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 		rootNode:    &node{isLeaf: true},
 		FillPercent: DefaultFillPercent,
 	}
-	var value = bucket.write()
+	var value = bucket.write() // 一个 桶 作为普通value内嵌
 
 	// Insert into node.
 	key = cloneBytes(key)
-	c.node().put(key, key, value, 0, bucketLeafFlag)
+	c.node().put(key, key, value, 0, bucketLeafFlag) // 标记为桶
 
 	// Since subbuckets are not allowed on inline buckets, we need to
 	// dereference the inline page, if it exists. This will cause the bucket
@@ -301,13 +306,13 @@ func (b *Bucket) Put(key []byte, value []byte) error {
 	k, _, flags := c.seek(key)
 
 	// Return an error if there is an existing key with a bucket value.
-	// key已经存在，就报错？？
+	// key已经存在而value是一个子桶
 	if bytes.Equal(key, k) && (flags&bucketLeafFlag) != 0 {
 		return ErrIncompatibleValue
 	}
 
 	// Insert into node.
-	key = cloneBytes(key) // 为什么要clone一份？
+	key = cloneBytes(key) // 为什么要clone一份??
 	// 直接插入到叶子节点
 	c.node().put(key, key, value, 0, 0)
 
@@ -535,6 +540,7 @@ func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, in
 // spill writes all the nodes for this bucket to dirty pages.
 // 节点分裂，事务写入提交的时候才会分裂
 // 该函数功能有二，将过大（尺寸大于一个 page）节点拆分、将节点写入脏页（dirty page）
+// 只会在 Tx.Commit() 函数里调用
 func (b *Bucket) spill() error {
 	// Spill all child buckets first. 自下而上，后序遍历，先递归调整子 bucket
 	for name, child := range b.buckets {
@@ -554,6 +560,7 @@ func (b *Bucket) spill() error {
 			value = make([]byte, unsafe.Sizeof(bucket{}))
 			var bucket = (*bucket)(unsafe.Pointer(&value[0]))
 			*bucket = *child.bucket
+			// 只写入 子 bucket的头部
 		}
 
 		// Skip writing the bucket if there are no materialized nodes.
@@ -561,7 +568,7 @@ func (b *Bucket) spill() error {
 			continue
 		}
 
-		// Update parent node. 更新父节点 对应的值
+		// Update parent node. 更新父节点上 子bucket 对应的value
 		var c = b.Cursor()
 		k, _, flags := c.seek([]byte(name))
 		if !bytes.Equal([]byte(name), k) {
@@ -578,12 +585,12 @@ func (b *Bucket) spill() error {
 		return nil
 	}
 
-	// 调整本 bucket
+	// 调整本 bucket 的 所有node， 会递归
 	// Spill nodes.
 	if err := b.rootNode.spill(); err != nil {
 		return err
 	}
-	b.rootNode = b.rootNode.root()
+	b.rootNode = b.rootNode.root() // 更新 新 root
 
 	// Update the root node for this bucket.
 	if b.rootNode.pgid >= b.tx.meta.pgid {
@@ -594,8 +601,8 @@ func (b *Bucket) spill() error {
 	return nil
 }
 
-// inlineable returns true if a bucket is small enough to be written inline
-// and if it contains no subbuckets. Otherwise returns false.
+// inlineable returns true if a bucket is small enough to be written inline and if it contains no subbuckets. Otherwise returns false.
+// 一个桶 只有一个叶子node， 且 元素大小 < 1KB, 且没有子bucket，才是可以inline的
 func (b *Bucket) inlineable() bool {
 	var n = b.rootNode
 
@@ -610,7 +617,7 @@ func (b *Bucket) inlineable() bool {
 	for _, inode := range n.inodes {
 		size += leafPageElementSize + uintptr(len(inode.key)) + uintptr(len(inode.value))
 
-		if inode.flags&bucketLeafFlag != 0 {
+		if inode.flags&bucketLeafFlag != 0 { // 如果有子桶 无法 inline
 			return false
 		} else if size > b.maxInlineBucketSize() {
 			return false
@@ -644,15 +651,16 @@ func (b *Bucket) write() []byte {
 
 // rebalance attempts to balance all nodes.
 // 合并节点 该函数旨在将过小（key数太少或者总体尺寸太小）的节点合并到邻居节点上
+// 只有在 Tx.Commit 函数里会调用
 func (b *Bucket) rebalance() {
-	// 对所有node进行调整
+	// 对所有子node进行合并
 	for _, n := range b.nodes {
 		n.rebalance()
 	}
 
-	// 堆所有子bucket进行调整
+	// 只对 缓存的子bucket进行调整??
 	for _, child := range b.buckets {
-		child.rebalance()
+		child.rebalance() // 递归
 	}
 }
 

@@ -70,8 +70,10 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 		instances  = 30
 		iterations = 30
 	)
+
 	path := tempfile()
 	defer os.RemoveAll(path)
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, iterations*instances)
 	for iteration := 0; iteration < iterations; iteration++ {
@@ -79,6 +81,7 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+
 				db, err := bolt.Open(path, 0600, nil)
 				if err != nil {
 					errCh <- err
@@ -92,6 +95,7 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 		}
 		wg.Wait()
 	}
+
 	close(errCh)
 	for err := range errCh {
 		if err != nil {

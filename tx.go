@@ -22,22 +22,26 @@ type txid uint64
 // are using them. A long running read transaction can cause the database to
 // quickly grow.
 type Tx struct {
-	writable       bool
-	managed        bool
-	db             *DB
-	meta           *meta
-	root           Bucket
-	pages          map[pgid]*page
-	stats          TxStats
-	commitHandlers []func() // 保存事务提交时的回调函数
+	writable bool // 事务是否可写
+	managed  bool // 标记 tx已经被内部函数封装，不应该手动提交
+
+	db   *DB
+	meta *meta
+	root Bucket
+
+	pages map[pgid]*page
+
+	stats TxStats
+
+	commitHandlers []func() // 事务提交后的回调函数
 
 	// WriteFlag specifies the flag for write-related methods like WriteTo().
 	// Tx opens the database file with the specified flag to copy the data.
 	//
-	// By default, the flag is unset, which works well for mostly in-memory
-	// workloads. For databases that are much larger than available RAM,
-	// set the flag to syscall.O_DIRECT to avoid trashing the page cache.
-	WriteFlag int
+	// By default, the flag is unset, which works well for mostly in-memory workloads.
+	// For databases that are much larger than available RAM,
+	// set the flag to syscall.O_DIRECT to avoid trashing the page cache. 避免数据在 操作系统 页缓存里又保存一份
+	WriteFlag int // 目前没设置过
 }
 
 // init initializes the transaction.
@@ -150,13 +154,16 @@ func (tx *Tx) Commit() error {
 
 	// Rebalance nodes which have had deletions.
 	var startTime = time.Now()
-	tx.root.rebalance()
+
+	// 合并小节点
+	tx.root.rebalance() // 只有这一个地方 调用rebalance函数
 	if tx.stats.Rebalance > 0 {
 		tx.stats.RebalanceTime += time.Since(startTime)
 	}
 
 	// spill data onto dirty pages.
 	startTime = time.Now()
+	// 重新分裂
 	if err := tx.root.spill(); err != nil {
 		tx.rollback()
 		return err
@@ -251,7 +258,7 @@ func (tx *Tx) commitFreelist() error {
 // transactions must be rolled back and not committed.
 func (tx *Tx) Rollback() error {
 	_assert(!tx.managed, "managed tx rollback not allowed")
-	if tx.db == nil {
+	if tx.db == nil { // 防止重入
 		return ErrTxClosed
 	}
 	tx.nonPhysicalRollback()
@@ -271,7 +278,7 @@ func (tx *Tx) nonPhysicalRollback() {
 
 // rollback needs to reload the free pages from disk in case some system error happens like fsync error.
 func (tx *Tx) rollback() {
-	if tx.db == nil {
+	if tx.db == nil { // 防止了重入
 		return
 	}
 	if tx.writable {
@@ -583,7 +590,7 @@ func (tx *Tx) write() error {
 }
 
 // writeMeta writes the meta to the disk.
-// 设计 freelist??
+// 涉及 freelist??
 func (tx *Tx) writeMeta() error {
 	// Create a temporary buffer for the meta page.
 	buf := make([]byte, tx.db.pageSize)

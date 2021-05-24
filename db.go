@@ -149,7 +149,9 @@ type DB struct {
 	batchMu sync.Mutex
 	batch   *batch
 
-	rwlock   sync.Mutex   // Allows only one writer at a time.
+	// 单写，不是读写锁
+	rwlock sync.Mutex // Allows only one writer at a time.
+
 	metalock sync.Mutex   // Protects meta page access.
 	mmaplock sync.RWMutex // Protects mmap access during remapping.
 	statlock sync.RWMutex // Protects stats access.
@@ -606,7 +608,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 
 	// Obtain writer lock. This is released by the transaction when it closes.
 	// This enforces only one writer transaction at a time.
-	db.rwlock.Lock()
+	db.rwlock.Lock() // tx.close() 解锁
 
 	// Once we have the writer lock then we can lock the meta pages so that
 	// we can set up the transaction.
