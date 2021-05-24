@@ -522,7 +522,7 @@ func (tx *Tx) write() error {
 	tx.pages = make(map[pgid]*page)
 	sort.Sort(pages)
 
-	// Write pages to disk in order.
+	// Write pages to disk in order. 刷盘所有脏页
 	for _, p := range pages {
 		rem := (uint64(p.overflow) + 1) * uint64(tx.db.pageSize)
 		offset := int64(p.id) * int64(tx.db.pageSize)
@@ -562,7 +562,7 @@ func (tx *Tx) write() error {
 		}
 	}
 
-	// Put small pages back to page pool.
+	// Put small pages back to page pool. 单页才 使用sync.Pool 缓存
 	for _, p := range pages {
 		// Ignore page sizes over 1 page.
 		// These are allocated using make() instead of the page pool.
@@ -583,6 +583,7 @@ func (tx *Tx) write() error {
 }
 
 // writeMeta writes the meta to the disk.
+// 设计 freelist??
 func (tx *Tx) writeMeta() error {
 	// Create a temporary buffer for the meta page.
 	buf := make([]byte, tx.db.pageSize)

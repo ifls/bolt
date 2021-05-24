@@ -288,6 +288,7 @@ func (f *freelist) read(p *page) {
 		f.ids = nil
 	} else {
 		var ids []pgid
+		// count 之后是 pgid 数组
 		data := unsafeIndex(unsafe.Pointer(p), unsafe.Sizeof(*p), unsafe.Sizeof(ids[0]), idx)
 		unsafeSlice(unsafe.Pointer(&ids), data, count)
 
@@ -391,6 +392,7 @@ func (f *freelist) noSyncReload(pgids []pgid) {
 	f.readIDs(a)
 }
 
+// 重建 map 索引
 // reindex rebuilds the free cache based on available and pending free lists.
 func (f *freelist) reindex() {
 	ids := f.getFreePageIDs()

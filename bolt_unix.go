@@ -9,6 +9,7 @@ import (
 	"unsafe"
 )
 
+// 系统调用 flock https://man7.org/linux/man-pages/man2/flock.2.html
 // flock acquires an advisory lock on a file descriptor.
 func flock(db *DB, exclusive bool, timeout time.Duration) error {
 	var t time.Time
@@ -16,11 +17,11 @@ func flock(db *DB, exclusive bool, timeout time.Duration) error {
 		t = time.Now()
 	}
 	fd := db.file.Fd()
-	flag := syscall.LOCK_NB
+	flag := syscall.LOCK_NB // non-block
 	if exclusive {
 		flag |= syscall.LOCK_EX
 	} else {
-		flag |= syscall.LOCK_SH
+		flag |= syscall.LOCK_SH // 只读的话, 加共享锁就可以
 	}
 	for {
 		// Attempt to obtain an exclusive lock.
@@ -43,7 +44,7 @@ func flock(db *DB, exclusive bool, timeout time.Duration) error {
 
 // funlock releases an advisory lock on a file descriptor.
 func funlock(db *DB) error {
-	return syscall.Flock(int(db.file.Fd()), syscall.LOCK_UN)
+	return syscall.Flock(int(db.file.Fd()), syscall.LOCK_UN) // 解锁
 }
 
 // mmap memory maps a DB's data file.
