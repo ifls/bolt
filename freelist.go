@@ -21,19 +21,25 @@ type pidSet map[pgid]struct{}
 type freelist struct {
 	freelistType FreelistType // freelist type
 
+	// 可以用于分配的 page id
 	ids []pgid // all free and available free page ids.
 
 	// 记录被分配给事务的页面
 	allocs map[pgid]txid // mapping of txid that allocated a pgid.
 
 	// pending 部分需要单独记录主要是为了做 MVCC 的事务
+	// 维护了 写事务 释放的 page id, 读事务使用了这些页面, 无法立刻释放, 读事务结束了, 就会释放出来放到 ids里, 复用
 	pending map[txid]*txPending // mapping of soon-to-be free page ids by tx.
 
 	// map, o(1)查找
-	cache          map[pgid]bool               // fast lookup of all free and pending page ids.
-	freemaps       map[uint64]pidSet           // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
-	forwardMap     map[pgid]uint64             // key is start pgid, value is its span size
-	backwardMap    map[pgid]uint64             // key is end pgid, value is its span size
+	cache map[pgid]bool // fast lookup of all free and pending page ids.
+
+	// 下面 3个都是 hmap 方式
+	freemaps    map[uint64]pidSet // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
+	forwardMap  map[pgid]uint64   // key is start pgid, value is its span size
+	backwardMap map[pgid]uint64   // key is end pgid, value is its span size
+
+	// 五个 函数
 	allocate       func(txid txid, n int) pgid // the freelist allocate func
 	freeCount      func() int                  // the function which gives you free page number
 	mergeSpans     func(ids pgids)             // the mergeSpan func
@@ -193,8 +199,8 @@ func (f *freelist) free(txid txid, p *page) {
 	}
 }
 
-// release 和 free 有什么区别??
-
+// release 和 free 有什么区别?? free是释放一个事务的 page
+// release 释放 已完成的读事务 所使用的 page 的 id
 // release moves all page ids for a transaction id (or older) to the freelist.
 func (f *freelist) release(txid txid) {
 	m := make(pgids, 0)

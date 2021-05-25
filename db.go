@@ -152,7 +152,9 @@ type DB struct {
 	// 单写，不是读写锁
 	rwlock sync.Mutex // Allows only one writer at a time.
 
-	metalock sync.Mutex   // Protects meta page access.
+	metalock sync.Mutex // Protects meta page access.
+
+	// 读写锁
 	mmaplock sync.RWMutex // Protects mmap access during remapping.
 	statlock sync.RWMutex // Protects stats access.
 
@@ -571,7 +573,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	// Obtain a read-only lock on the mmap. When the mmap is remapped it will
 	// obtain a write lock so all transactions must finish before it can be
 	// remapped.
-	db.mmaplock.RLock()
+	db.mmaplock.RLock() // 读事务 加上 读锁
 
 	// Exit if the database is not open yet.
 	if !db.opened {
@@ -634,13 +636,14 @@ func (db *DB) beginRWTx() (*Tx, error) {
 // freePages releases any pages associated with closed read-only transactions.
 func (db *DB) freePages() {
 	// Free all pending pages prior to earliest open transaction.
-	sort.Sort(txsById(db.txs))
+	sort.Sort(txsById(db.txs)) // 先排序
 	minid := txid(0xFFFFFFFFFFFFFFFF)
 	if len(db.txs) > 0 {
-		minid = db.txs[0].meta.txid
+		minid = db.txs[0].meta.txid // 最小的读事务id
 	}
+
 	if minid > 0 {
-		db.freelist.release(minid - 1)
+		db.freelist.release(minid - 1) // minid - 1, 表示所有已释放的 读事务id
 	}
 	// Release unused txid extents.
 	for _, t := range db.txs {
@@ -660,7 +663,7 @@ func (t txsById) Less(i, j int) bool { return t[i].meta.txid < t[j].meta.txid }
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
 	// Release the read lock on the mmap.
-	db.mmaplock.RUnlock()
+	db.mmaplock.RUnlock() // 释放读事务 加的 读锁
 
 	// Use the meta lock to restrict access to the DB object.
 	db.metalock.Lock()
@@ -671,7 +674,7 @@ func (db *DB) removeTx(tx *Tx) {
 			last := len(db.txs) - 1
 			db.txs[i] = db.txs[last]
 			db.txs[last] = nil
-			db.txs = db.txs[:last]
+			db.txs = db.txs[:last] // 交换删除,  所以 txs 里 txid 不是 有序的
 			break
 		}
 	}
@@ -957,7 +960,7 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 	p.id = db.rwtx.meta.pgid
 	var minsz = int((p.id+pgid(count))+1) * db.pageSize
 	if minsz >= db.datasz {
-		// 映射更多内存
+		// 映射更多内存, 会对 mmap 加上写锁
 		if err := db.mmap(minsz); err != nil {
 			return nil, fmt.Errorf("mmap allocate error: %s", err)
 		}
