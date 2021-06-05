@@ -17,17 +17,17 @@ type txid uint64
 // Read-only transactions can be used for retrieving values for keys and creating cursors.
 // Read/write transactions can create and remove buckets and create and remove keys.
 //
-// IMPORTANT: You must commit or rollback transactions when you are done with
-// them. Pages can not be reclaimed by the writer until no more transactions
-// are using them. A long running read transaction can cause the database to
-// quickly grow.
+// IMPORTANT: You must commit or rollback transactions when you are done with them.
+// Pages can not be reclaimed by the writer until no more transactions are using them.
+// A long running read transaction can cause the database to quickly grow.
+// 如何保证读写事务互斥的??
 type Tx struct {
 	writable bool // 事务是否可写
 	managed  bool // 标记 tx已经被内部函数封装，不应该手动提交
 
-	db   *DB
-	meta *meta
-	root Bucket
+	db   *DB    // 用于判断tx已经close，放page id 回freelist, 以及获取pageSize
+	meta *meta  // 元数据
+	root Bucket // 根节点
 
 	pages map[pgid]*page // 记录 所有分配的连续页, 也就是会被写入的脏页
 
@@ -39,7 +39,7 @@ type Tx struct {
 	// Tx opens the database file with the specified flag to copy the data.
 	//
 	// By default, the flag is unset, which works well for mostly in-memory workloads.
-	// For databases that are much larger than available RAM,
+	// For databases that are much larger than available RAM, 对于 超过内存大小的,
 	// set the flag to syscall.O_DIRECT to avoid trashing the page cache. 避免数据在 操作系统 页缓存里又保存一份
 	WriteFlag int // 目前没设置过
 }
@@ -77,6 +77,7 @@ func (tx *Tx) DB() *DB {
 
 // Size returns current database size in bytes as seen by this transaction.
 func (tx *Tx) Size() int64 {
+	// tx.meta.pgid 是 已分配的页面的数量
 	return int64(tx.meta.pgid) * int64(tx.db.pageSize)
 }
 
