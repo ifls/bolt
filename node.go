@@ -426,21 +426,22 @@ func (n *node) rebalance() {
 
 	// Ignore if node is above threshold (25%) and has enough keys.
 	var threshold = n.bucket.tx.db.pageSize / 4
-	// 且页面 > 1KB, 元素足够，不需要被合并
+	// 且页面 > 1KB, 元素足够，不需要合并或者被合并
 	if n.size() > threshold && len(n.inodes) > n.minKeys() {
 		return
 	}
 
 	// Root node has special handling.
 	// 重新平衡递归向下走不会进入，递归向上的时候，可能会进入
-	if n.parent == nil { //根节点， 如果该节点是根节点，且只有一个孩子节点，则将其和其唯一的孩子合并。
+	//根节点， 如果该节点是根节点，且只有一个孩子节点，则将其和其唯一的孩子合并。
+	if n.parent == nil {
 		// If root node is a branch and only has one node then collapse it.
 		if !n.isLeaf && len(n.inodes) == 1 {
 			// Move root's child up.
 			child := n.bucket.node(n.inodes[0].pgid, n)
 			n.isLeaf = child.isLeaf
 			n.inodes = child.inodes[:]
-			n.children = child.children
+			n.children = child.children // 这里就是 removeChild()的逻辑了
 
 			// Reparent all child nodes being moved.
 			// 所有子节点 重新设置父节点
@@ -471,7 +472,7 @@ func (n *node) rebalance() {
 	}
 
 	_assert(n.parent.numChildren() > 1, "parent must have at least 2 children")
-	// 保证有2个以上兄弟节点，怎么保证的??
+	// 保证有2个以上兄弟节点，非根节点 分裂，必然会出现两个子节点
 
 	// 都是将 右边的节点合到左边
 
@@ -485,10 +486,11 @@ func (n *node) rebalance() {
 		target = n.prevSibling()
 	}
 
-	// 如果右节点本身很大呢??
-	// 吃掉了右节点，那么上面的for遍历子节点会发生什么??
+	// 兄弟节点只会合并一次
+	// 如果右节点本身很大，之后会进行分裂
+	// 吃掉了右节点，那么上面的for遍历的操作过的子节点 本身不是兄弟节点
 	// If both this node and the target node are too small then merge them.
-	if useNextSibling { // 右节点合并到左节点
+	if useNextSibling { // 右节点合并到左边的自己
 		// Reparent all child nodes being moved.
 		// 更新右节点的子节点
 		for _, inode := range target.inodes {
@@ -505,7 +507,7 @@ func (n *node) rebalance() {
 		n.parent.removeChild(target)
 		delete(n.bucket.nodes, target.pgid)
 		target.free()
-	} else {
+	} else { // 将自己合并到左边的节点
 		// Reparent all child nodes being moved.
 		for _, inode := range n.inodes {
 			if child, ok := n.bucket.nodes[inode.pgid]; ok {

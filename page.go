@@ -11,8 +11,8 @@ const pageHeaderSize = unsafe.Sizeof(page{}) // 16B
 
 const minKeysPerPage = 2
 
-const branchPageElementSize = unsafe.Sizeof(branchPageElement{})
-const leafPageElementSize = unsafe.Sizeof(leafPageElement{})
+const branchPageElementSize = unsafe.Sizeof(branchPageElement{}) // 16B
+const leafPageElementSize = unsafe.Sizeof(leafPageElement{})     // 16B
 
 const (
 	branchPageFlag   = 0x01 // 分支页，也就是非叶子节点
@@ -206,5 +206,6 @@ func mergepgids(dst, a, b pgids) {
 	}
 
 	// Append what's left in follow.
+	// 只有超过cap, 才会重新分配空间??, 所以可以放心append
 	_ = append(merged, follow...)
 }

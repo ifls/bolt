@@ -29,7 +29,7 @@ type Tx struct {
 	meta *meta
 	root Bucket
 
-	pages map[pgid]*page
+	pages map[pgid]*page // 记录 所有分配的连续页, 也就是会被写入的脏页
 
 	stats TxStats
 
@@ -56,7 +56,7 @@ func (tx *Tx) init(db *DB) {
 	// Copy over the root bucket.
 	tx.root = newBucket(tx)
 	tx.root.bucket = &bucket{}
-	*tx.root.bucket = tx.meta.root // 拷贝 根 桶
+	*tx.root.bucket = tx.meta.root // 拷贝 根桶
 
 	// Increment the transaction id and add a page cache for writable transactions.
 	if tx.writable {
@@ -171,6 +171,7 @@ func (tx *Tx) Commit() error {
 	tx.stats.SpillTime += time.Since(startTime)
 
 	// Free the old root bucket.
+	// 更新元数据里的 根节点id
 	tx.meta.root.root = tx.root.root
 
 	// Free the old freelist because commit writes out a fresh freelist.
@@ -178,13 +179,13 @@ func (tx *Tx) Commit() error {
 		tx.db.freelist.free(tx.meta.txid, tx.db.page(tx.meta.freelist))
 	}
 
-	if !tx.db.NoFreelistSync {
+	if !tx.db.NoFreelistSync { // 默认情况是提交的
 		err := tx.commitFreelist()
 		if err != nil {
 			return err
 		}
 	} else {
-		tx.meta.freelist = pgidNoFreelist
+		tx.meta.freelist = pgidNoFreelist // 做个不写入freelist到文件的标记
 	}
 
 	// Write dirty pages to disk.
@@ -324,7 +325,7 @@ func (tx *Tx) close() {
 	// Clear all references.
 	tx.db = nil
 	tx.meta = nil
-	tx.root = Bucket{tx: tx}
+	tx.root = Bucket{tx: tx} // 这里 覆盖就可以，赋值tx没什么意义了
 	tx.pages = nil
 }
 
@@ -501,6 +502,7 @@ func (tx *Tx) checkBucket(b *Bucket, reachable map[pgid]*page, freed map[pgid]bo
 }
 
 // allocate returns a contiguous block of memory starting at a given page.
+// count 的单位 是页数
 func (tx *Tx) allocate(count int) (*page, error) {
 	p, err := tx.db.allocate(tx.meta.txid, count)
 	if err != nil {
@@ -527,9 +529,11 @@ func (tx *Tx) write() error {
 
 	// Clear out page cache early.
 	tx.pages = make(map[pgid]*page)
+
 	sort.Sort(pages)
 
-	// Write pages to disk in order. 刷盘所有脏页
+	// Write pages to disk in order. 刷盘所有脏页， 把分配的其他地方的页面，写到文件里，也就是映射的虚拟空间里，
+	// mmap好像只影响了读的方式， 写入还是文件io那一样
 	for _, p := range pages {
 		rem := (uint64(p.overflow) + 1) * uint64(tx.db.pageSize)
 		offset := int64(p.id) * int64(tx.db.pageSize)
@@ -579,10 +583,13 @@ func (tx *Tx) write() error {
 
 		buf := unsafeByteSlice(unsafe.Pointer(p), 0, 0, tx.db.pageSize)
 
+		// 如何用memclr 清零优化性能?
 		// See https://go.googlesource.com/go/+/f03c9202c43e0abb130669852082117ca50aa9b1
+		// 清0 然后把单页，放回缓冲池
 		for i := range buf {
 			buf[i] = 0
 		}
+
 		tx.db.pagePool.Put(buf)
 	}
 
@@ -598,6 +605,7 @@ func (tx *Tx) writeMeta() error {
 	tx.meta.write(p)
 
 	// Write the meta page to file.
+	// p.id = m.txid % 2, 所以两个meta页轮流写
 	if _, err := tx.db.ops.writeAt(buf, int64(p.id)*int64(tx.db.pageSize)); err != nil {
 		return err
 	}
