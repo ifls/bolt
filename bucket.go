@@ -553,7 +553,7 @@ func (b *Bucket) spill() error {
 			child.free() // 释放页面
 			value = child.write()
 		} else {
-			if err := child.spill(); err != nil {
+			if err := child.spill(); err != nil { // 递归
 				return err
 			}
 
@@ -578,6 +578,7 @@ func (b *Bucket) spill() error {
 		if flags&bucketLeafFlag == 0 {
 			panic(fmt.Sprintf("unexpected bucket header flag: %x", flags))
 		}
+		// 重新写入子桶
 		c.node().put([]byte(name), []byte(name), value, 0, bucketLeafFlag)
 	}
 
@@ -592,8 +593,8 @@ func (b *Bucket) spill() error {
 	if err := b.rootNode.spill(); err != nil {
 		return err
 	}
-	b.rootNode = b.rootNode.root() // 更新 新 root
 
+	b.rootNode = b.rootNode.root() // 更新 新 root
 	// Update the root node for this bucket.
 	if b.rootNode.pgid >= b.tx.meta.pgid {
 		panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", b.rootNode.pgid, b.tx.meta.pgid))

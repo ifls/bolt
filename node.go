@@ -284,7 +284,7 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	}
 
 	// Determine the threshold before starting a new node.
-	var fillPercent = n.bucket.FillPercent
+	var fillPercent = n.bucket.FillPercent // 默认0.5
 	if fillPercent < minFillPercent {
 		fillPercent = minFillPercent
 	} else if fillPercent > maxFillPercent {
@@ -293,11 +293,11 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	threshold := int(float64(pageSize) * fillPercent)
 
 	// Determine split position and sizes of the two pages.
-	splitIndex, _ := n.splitIndex(threshold)
+	splitIndex, _ := n.splitIndex(threshold) // 保持node 半满， 避免频繁merge或者分裂
 
 	// Split node into two separate nodes.
 	// If there's no parent then we'll need to create one.
-	if n.parent == nil {
+	if n.parent == nil { // 根节点分裂，需要 新创建一个 根节点
 		n.parent = &node{bucket: n.bucket, children: []*node{n}}
 	}
 
@@ -305,7 +305,7 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	next := &node{bucket: n.bucket, isLeaf: n.isLeaf, parent: n.parent}
 	n.parent.children = append(n.parent.children, next)
 
-	// Split inodes across two nodes.
+	// Split inodes across two nodes. 分成两个node
 	next.inodes = n.inodes[splitIndex:]
 	n.inodes = n.inodes[:splitIndex]
 
@@ -353,23 +353,24 @@ func (n *node) spill() error {
 	// the children size on every loop iteration.
 	sort.Sort(n.children)
 	for i := 0; i < len(n.children); i++ {
-		if err := n.children[i].spill(); err != nil {
+		if err := n.children[i].spill(); err != nil { // 递归，自底向上
 			return err
 		}
 	}
 
 	// We no longer need the child list because it's only used for spill tracking.
-	n.children = nil
+	n.children = nil // 子node, 已经调整完了，再也用不上了
 
 	// Split nodes into appropriate sizes. The first node will always be n.
 	var nodes = n.split(uintptr(tx.db.pageSize))
 	for _, node := range nodes {
 		// Add node's page to the freelist if it's not new.
-		if node.pgid > 0 { // 老页面 放回空闲列表
+		if node.pgid > 0 { // n的第一个node才有page id 放回空闲列表
 			tx.db.freelist.free(tx.meta.txid, tx.page(node.pgid))
 			node.pgid = 0
 		}
 
+		// 给每个node，分配新的 page内存， 并把node 序列化 保存在page 的内存上
 		// Allocate contiguous space for the node. 向上取整
 		p, err := tx.allocate((node.size() + tx.db.pageSize - 1) / tx.db.pageSize)
 		if err != nil {
@@ -526,7 +527,7 @@ func (n *node) rebalance() {
 	}
 
 	// Either this node or the target node was deleted from the parent so rebalance it.
-	// 子节点合并了，父节点也需要平衡， 向上递归看是否需要进一步调整。
+	// 子节点合并了，父节点删除了一些key，也需要判断是否需要合并， 向上递归看是否需要进一步调整。
 	n.parent.rebalance()
 }
 
