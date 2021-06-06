@@ -150,7 +150,7 @@ type DB struct {
 
 	// 批处理
 	batchMu sync.Mutex
-	batch   *batch
+	batch   *batch // 一次只有串行一个批处理对象
 
 	// 单写，不是读写锁， 只是阻止写和关闭的并发执行， 读写完全不影响，不需要控制一写多读的并发写
 	rwlock sync.Mutex // Allows only one writer at a time.
@@ -201,9 +201,9 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	db.FreelistType = options.FreelistType
 
 	// Set default values for later DB operations.
-	db.MaxBatchSize = DefaultMaxBatchSize
-	db.MaxBatchDelay = DefaultMaxBatchDelay
-	db.AllocSize = DefaultAllocSize
+	db.MaxBatchSize = DefaultMaxBatchSize   // 1000
+	db.MaxBatchDelay = DefaultMaxBatchDelay // 10ms
+	db.AllocSize = DefaultAllocSize         // 16M
 
 	flag := os.O_RDWR
 	if options.ReadOnly {
@@ -219,7 +219,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 
 	// Open data file and separate sync handler for metadata writes.
 	var err error
-	// 不 truncate, 复用文件内存， 文件不存在则创建
+	// 不 truncate, 复用文件内容， 文件不存在则创建
 	if db.file, err = db.openFile(path, flag|os.O_CREATE, mode); err != nil {
 		_ = db.close()
 		return nil, err
@@ -298,6 +298,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		return db, nil
 	}
 
+	// 只读的话，不需要 管理空闲链表
 	db.loadFreelist()
 
 	// Flush freelist when transitioning from no sync to sync so
@@ -715,7 +716,7 @@ func (db *DB) Update(fn func(*Tx) error) error {
 
 	// Make sure the transaction rolls back in the event of a panic.
 	defer func() {
-		if t.db != nil {
+		if t.db != nil { // 如果panic，这里只负责回滚，不复制 recover?
 			t.rollback()
 		}
 	}()
@@ -768,20 +769,16 @@ func (db *DB) View(fn func(*Tx) error) error {
 // Batch calls fn as part of a batch. It behaves similar to Update,
 // except:
 // 多个fn 会合并在一个事务里进行批处理后, 再一次提交
-// 1. concurrent Batch calls can be combined into a single Bolt
-// transaction.
+// 1. concurrent Batch calls can be combined into a single Bolt transaction.
 //
-// 2. the function passed to Batch may be called multiple times,
-// regardless of whether it returns error or not.
+// 2. the function passed to Batch may be called multiple times, regardless of whether it returns error or not.
 //
 // This means that Batch function side effects must be idempotent and
-// take permanent effect only after a successful return is seen in
-// caller.
+// take permanent effect only after a successful return is seen in caller.
 //
-// The maximum batch size and delay can be adjusted with DB.MaxBatchSize
-// and DB.MaxBatchDelay, respectively.
+// The maximum batch size and delay can be adjusted with DB.MaxBatchSize and DB.MaxBatchDelay, respectively.
 //
-// Batch is only useful when there are multiple goroutines calling it.
+// Batch is only useful when there are multiple goroutines calling it. 多goroutine并发的时候才有用，但goroutine会直接阻塞
 func (db *DB) Batch(fn func(*Tx) error) error {
 	errCh := make(chan error, 1)
 
@@ -791,10 +788,10 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		db.batch = &batch{
 			db: db,
 		}
-		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
+		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger) // 超时触发
 	}
 	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
-	if len(db.batch.calls) >= db.MaxBatchSize {
+	if len(db.batch.calls) >= db.MaxBatchSize { // 超量触发
 		// wake up batch, it's ready to run
 		go db.batch.trigger()
 	}
@@ -841,6 +838,7 @@ retry:
 		var failIdx = -1
 		err := b.db.Update(func(tx *Tx) error {
 			for i, c := range b.calls {
+				// safelyCall 防止 panic
 				if err := safelyCall(c.fn, tx); err != nil {
 					failIdx = i
 					return err
@@ -854,15 +852,16 @@ retry:
 			// safe to shorten b.calls here because db.batch no longer
 			// points to us, and we hold the mutex anyway.
 			c := b.calls[failIdx]
-			b.calls[failIdx], b.calls = b.calls[len(b.calls)-1], b.calls[:len(b.calls)-1]
+			b.calls[failIdx], b.calls = b.calls[len(b.calls)-1], b.calls[:len(b.calls)-1] // 交换到最后面
 			// tell the submitter re-run it solo, continue with the rest of the batch
-			c.err <- trySolo
+			c.err <- trySolo // 通知单独重试
 			continue retry
 		}
 
+		// failIdx == -1 说明全部成功，或者 Update本身出错了
 		// pass success, or bolt internal errors, to all callers
 		for _, c := range b.calls {
-			c.err <- err
+			c.err <- err // 上面被单独重试的，不会再处理这个错误了
 		}
 		break retry
 	}
@@ -897,6 +896,7 @@ func safelyCall(fn func(*Tx) error, tx *Tx) (err error) {
 //
 // This is not necessary under normal operation, however, if you use NoSync
 // then it allows you to force the database file to sync against the disk.
+// 主动同步数据到磁盘
 func (db *DB) Sync() error { return fdatasync(db) }
 
 // Stats retrieves ongoing performance stats for the database.
