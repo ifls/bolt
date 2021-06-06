@@ -144,6 +144,7 @@ func (tx *Tx) OnCommit(fn func()) {
 // Returns an error if a disk write error occurs, or if Commit is
 // called on a read-only transaction.
 func (tx *Tx) Commit() error {
+	// managed 状态 不允许手动提交
 	_assert(!tx.managed, "managed tx commit not allowed")
 	if tx.db == nil {
 		return ErrTxClosed
@@ -181,6 +182,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	if !tx.db.NoFreelistSync { // 默认情况是提交的
+		// 更新 meta.freelist
 		err := tx.commitFreelist()
 		if err != nil {
 			return err
@@ -213,7 +215,7 @@ func (tx *Tx) Commit() error {
 		}
 	}
 
-	// Write meta to disk.
+	// Write meta to disk. 元数据落盘
 	if err := tx.writeMeta(); err != nil {
 		tx.rollback()
 		return err
@@ -235,16 +237,19 @@ func (tx *Tx) commitFreelist() error {
 	// Allocate new pages for the new free list. This will overestimate
 	// the size of the freelist but not underestimate the size (which would be bad).
 	opgid := tx.meta.pgid
-	p, err := tx.allocate((tx.db.freelist.size() / tx.db.pageSize) + 1)
+	p, err := tx.allocate((tx.db.freelist.size() / tx.db.pageSize) + 1) // 多分配一页
 	if err != nil {
 		tx.rollback()
 		return err
 	}
+
+	// 序列化到 page
 	if err := tx.db.freelist.write(p); err != nil {
 		tx.rollback()
 		return err
 	}
-	tx.meta.freelist = p.id
+
+	tx.meta.freelist = p.id // 是此事务的id， freelist的 page id 不一定是 2
 	// If the high water mark has moved up then attempt to grow the database.
 	if tx.meta.pgid > opgid {
 		if err := tx.db.grow(int(tx.meta.pgid+1) * tx.db.pageSize); err != nil {
@@ -268,6 +273,8 @@ func (tx *Tx) Rollback() error {
 }
 
 // nonPhysicalRollback is called when user calls Rollback directly, in this case we do not need to reload the free pages from disk.
+// 和 下面的 rollback() 相比 不需要加载 freelist，因为根本没有提交修改过freelist
+// 而 如果在writeMeta() 出现错误， 调用rollback时() freelist已经被改变了， 所以需要重新加载
 func (tx *Tx) nonPhysicalRollback() {
 	if tx.db == nil {
 		return
@@ -309,7 +316,7 @@ func (tx *Tx) close() {
 
 		// Remove transaction ref & writer lock.
 		tx.db.rwtx = nil
-		tx.db.rwlock.Unlock()
+		tx.db.rwlock.Unlock() // 解锁
 
 		// Merge statistics.
 		tx.db.statlock.Lock()
@@ -429,6 +436,7 @@ func (tx *Tx) check(ch chan error) {
 	tx.db.loadFreelist()
 
 	// Check if any pages are double freed.
+	// 检查 空闲page 在 切片里，是否重复出现
 	freed := make(map[pgid]bool)
 	all := make([]pgid, tx.db.freelist.count())
 	tx.db.freelist.copyall(all)
@@ -445,7 +453,7 @@ func (tx *Tx) check(ch chan error) {
 	reachable[1] = tx.page(1) // meta1
 	if tx.meta.freelist != pgidNoFreelist {
 		for i := uint32(0); i <= tx.page(tx.meta.freelist).overflow; i++ {
-			reachable[tx.meta.freelist+pgid(i)] = tx.page(tx.meta.freelist)
+			reachable[tx.meta.freelist+pgid(i)] = tx.page(tx.meta.freelist) // 都指向同一个page
 		}
 	}
 
@@ -453,6 +461,7 @@ func (tx *Tx) check(ch chan error) {
 	tx.checkBucket(&tx.root, reachable, freed, ch)
 
 	// Ensure all pages below high water mark are either reachable or freed.
+	// 所有page只能有两种状态 在使用，或者在空闲列表
 	for i := pgid(0); i < tx.meta.pgid; i++ {
 		_, isReachable := reachable[i]
 		if !isReachable && !freed[i] {
@@ -476,7 +485,7 @@ func (tx *Tx) checkBucket(b *Bucket, reachable map[pgid]*page, freed map[pgid]bo
 			ch <- fmt.Errorf("page %d: out of bounds: %d", int(p.id), int(b.tx.meta.pgid))
 		}
 
-		// Ensure each page is only referenced once.
+		// Ensure each page is only referenced once. 避免重复
 		for i := pgid(0); i <= pgid(p.overflow); i++ {
 			var id = p.id + i
 			if _, ok := reachable[id]; ok {
@@ -490,10 +499,11 @@ func (tx *Tx) checkBucket(b *Bucket, reachable map[pgid]*page, freed map[pgid]bo
 			ch <- fmt.Errorf("page %d: reachable freed", int(p.id))
 		} else if (p.flags&branchPageFlag) == 0 && (p.flags&leafPageFlag) == 0 {
 			ch <- fmt.Errorf("page %d: invalid type: %s", int(p.id), p.typ())
-		}
+		} // 必须是 分支页和 叶子节点页
 	})
 
 	// Check each bucket within this bucket.
+	// 递归检查 子桶
 	_ = b.ForEach(func(k, v []byte) error {
 		if child := b.Bucket(k); child != nil {
 			tx.checkBucket(child, reachable, freed, ch)

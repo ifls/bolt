@@ -682,7 +682,7 @@ func (db *DB) removeTx(tx *Tx) {
 	for i, t := range db.txs {
 		if t == tx {
 			last := len(db.txs) - 1
-			db.txs[i] = db.txs[last]
+			db.txs[i] = db.txs[last] // 交换删除
 			db.txs[last] = nil
 			db.txs = db.txs[:last]
 			break
