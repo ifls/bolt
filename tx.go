@@ -295,7 +295,7 @@ func (tx *Tx) rollback() {
 		if !tx.db.hasSyncedFreelist() {
 			// Reconstruct free page list by scanning the DB to get the whole free page list.
 			// Note: scaning the whole db is heavy if your db size is large in NoSyncFreeList mode.
-			tx.db.freelist.noSyncReload(tx.db.freepages())
+			tx.db.freelist.noSyncReload(tx.db.freepages()) // 扫描整个db，而不是从记录的freelist读
 		} else {
 			// Read free page list from freelist page.
 			tx.db.freelist.reload(tx.db.page(tx.db.meta().freelist))

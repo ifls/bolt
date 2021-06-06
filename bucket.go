@@ -258,7 +258,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 	// Release all bucket pages to freelist.
 	child.nodes = nil
 	child.rootNode = nil
-	child.free()
+	child.free() // 释放所使用的page
 
 	// Delete the node if we have a matching key.
 	c.node().del(key)
@@ -550,7 +550,7 @@ func (b *Bucket) spill() error {
 		// like a normal bucket and make the parent value a pointer to the page.
 		var value []byte
 		if child.inlineable() { // 如果子 bucket 可以内嵌，则将其所有数据序列化后内嵌到父 bucket 相应叶子节点
-			child.free() // 释放页面
+			child.free() // 自桶内嵌，释放之前占用的page
 			value = child.write()
 		} else {
 			if err := child.spill(); err != nil { // 递归
