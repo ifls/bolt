@@ -577,15 +577,15 @@ func (db *DB) beginTx() (*Tx, error) {
 	// Lock the meta pages while we initialize the transaction. We obtain
 	// the meta lock before the mmap lock because that's the order that the
 	// write transaction will obtain them.
-	db.metalock.Lock()
+	db.metalock.Lock() // 对元数据上锁，避免更新
 
 	// Obtain a read-only lock on the mmap. When the mmap is remapped it will
 	// obtain a write lock so all transactions must finish before it can be
 	// remapped.
-	db.mmaplock.RLock()
+	db.mmaplock.RLock() // 读锁， 阻止重新mmap
 
 	// Exit if the database is not open yet.
-	if !db.opened {
+	if !db.opened { // 不能提到最前面??
 		db.mmaplock.RUnlock()
 		db.metalock.Unlock()
 		return nil, ErrDatabaseNotOpen
@@ -600,7 +600,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	n := len(db.txs)
 
 	// Unlock the meta pages.
-	db.metalock.Unlock()
+	db.metalock.Unlock() // 解锁元数据
 
 	// Update the transaction stats.
 	db.statlock.Lock()
@@ -647,20 +647,20 @@ func (db *DB) beginRWTx() (*Tx, error) {
 // freePages releases any pages associated with closed read-only transactions.
 func (db *DB) freePages() {
 	// Free all pending pages prior to earliest open transaction.
-	sort.Sort(txsById(db.txs))
+	sort.Sort(txsById(db.txs)) // 按txid 排序
 	minid := txid(0xFFFFFFFFFFFFFFFF)
 	if len(db.txs) > 0 {
 		minid = db.txs[0].meta.txid
 	}
 	if minid > 0 {
-		db.freelist.release(minid - 1)
+		db.freelist.release(minid - 1) // [0, minid - 1]
 	}
 	// Release unused txid extents.
 	for _, t := range db.txs {
-		db.freelist.releaseRange(minid, t.meta.txid-1)
+		db.freelist.releaseRange(minid, t.meta.txid-1) // [minid, txid - 1]
 		minid = t.meta.txid + 1
 	}
-	db.freelist.releaseRange(minid, txid(0xFFFFFFFFFFFFFFFF))
+	db.freelist.releaseRange(minid, txid(0xFFFFFFFFFFFFFFFF)) // [minid, 无限大)
 	// Any page both allocated and freed in an extent is safe to release.
 	// [0, minid-1, minid, txid-1, txid, txid2-1, txid, 0xFFFFFFFFFFFFFFFF)
 }
@@ -674,7 +674,7 @@ func (t txsById) Less(i, j int) bool { return t[i].meta.txid < t[j].meta.txid }
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
 	// Release the read lock on the mmap.
-	db.mmaplock.RUnlock()
+	db.mmaplock.RUnlock() // 释放读锁
 
 	// Use the meta lock to restrict access to the DB object.
 	db.metalock.Lock()

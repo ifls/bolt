@@ -56,12 +56,12 @@ func (tx *Tx) init(db *DB) {
 	// Copy over the root bucket.
 	tx.root = newBucket(tx)
 	tx.root.bucket = &bucket{}
-	*tx.root.bucket = tx.meta.root // 拷贝 根桶
+	*tx.root.bucket = tx.meta.root // 从元数据，拷贝 根桶
 
 	// Increment the transaction id and add a page cache for writable transactions.
 	if tx.writable {
 		tx.pages = make(map[pgid]*page)
-		tx.meta.txid += txid(1) // 事务id ++
+		tx.meta.txid += txid(1) // 元数据 事务id ++
 	}
 }
 
