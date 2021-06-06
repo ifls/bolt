@@ -152,7 +152,7 @@ type DB struct {
 	batchMu sync.Mutex
 	batch   *batch
 
-	// 单写，不是读写锁
+	// 单写，不是读写锁， 只是阻止写和关闭的并发执行， 读写完全不影响，不需要控制一写多读的并发写
 	rwlock sync.Mutex // Allows only one writer at a time.
 
 	metalock sync.Mutex   // Protects meta page access.

@@ -385,7 +385,7 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 		return n, fmt.Errorf("meta 1 copy: %s", err)
 	}
 
-	// Move past the meta pages in the file.
+	// Move past the two meta pages in the file.
 	if _, err := f.Seek(int64(tx.db.pageSize*2), io.SeekStart); err != nil {
 		return n, fmt.Errorf("seek: %s", err)
 	}
@@ -608,7 +608,7 @@ func (tx *Tx) write() error {
 }
 
 // writeMeta writes the meta to the disk.
-// 涉及 freelist??
+// 不涉及 freelist
 func (tx *Tx) writeMeta() error {
 	// Create a temporary buffer for the meta page.
 	buf := make([]byte, tx.db.pageSize)
@@ -637,6 +637,7 @@ func (tx *Tx) writeMeta() error {
 // If page has been written to then a temporary buffered page is returned.
 func (tx *Tx) page(id pgid) *page {
 	// Check the dirty pages first.
+	// 从修改过的脏页里读
 	if tx.pages != nil {
 		if p, ok := tx.pages[id]; ok {
 			return p
