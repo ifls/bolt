@@ -8,9 +8,11 @@ import (
 
 // txPending holds a list of pgids and corresponding allocation txns that are pending to be freed.
 type txPending struct {
-	ids              []pgid
-	alloctx          []txid // txids allocating the ids
-	lastReleaseBegin txid   // beginning txid of last matching releaseRange
+	// 关联数组
+	ids     []pgid
+	alloctx []txid // txids allocating the ids
+
+	lastReleaseBegin txid // beginning txid of last matching releaseRange
 }
 
 // pidSet holds the set of starting pgids which have the same span size
@@ -30,10 +32,12 @@ type freelist struct {
 	pending map[txid]*txPending // mapping of soon-to-be free page ids by tx.
 
 	// map, o(1)查找
-	cache          map[pgid]bool               // fast lookup of all free and pending page ids.
-	freemaps       map[uint64]pidSet           // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
-	forwardMap     map[pgid]uint64             // key is start pgid, value is its span size
-	backwardMap    map[pgid]uint64             // key is end pgid, value is its span size
+	cache map[pgid]bool // fast lookup of all free and pending page ids.
+
+	freemaps    map[uint64]pidSet // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
+	forwardMap  map[pgid]uint64   // key is start pgid, value is its span size
+	backwardMap map[pgid]uint64   // key is end pgid, value is its span size
+
 	allocate       func(txid txid, n int) pgid // the freelist allocate func
 	freeCount      func() int                  // the function which gives you free page number
 	mergeSpans     func(ids pgids)             // the mergeSpan func
