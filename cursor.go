@@ -55,10 +55,12 @@ func (c *Cursor) First() (key []byte, value []byte) {
 func (c *Cursor) Last() (key []byte, value []byte) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
 	c.stack = c.stack[:0]
+
 	p, n := c.bucket.pageNode(c.bucket.root)
 	ref := elemRef{page: p, node: n}
 	ref.index = ref.count() - 1
 	c.stack = append(c.stack, ref)
+
 	c.last()
 	k, v, flags := c.keyValue()
 	if (flags & uint32(bucketLeafFlag)) != 0 {
@@ -93,7 +95,7 @@ func (c *Cursor) Prev() (key []byte, value []byte) {
 			elem.index--
 			break
 		}
-		c.stack = c.stack[:i] // 在循环遍历中 更新 stack??
+		c.stack = c.stack[:i] // 从后往前遍历, 可以更新
 	}
 
 	// If we've hit the end then return nil.
@@ -102,7 +104,7 @@ func (c *Cursor) Prev() (key []byte, value []byte) {
 	}
 
 	// Move down the stack to find the last element of the last leaf under this branch.
-	c.last()
+	c.last() // 当前的最右边节点
 	k, v, flags := c.keyValue()
 	if (flags & uint32(bucketLeafFlag)) != 0 {
 		return k, nil
@@ -118,20 +120,21 @@ func (c *Cursor) Seek(seek []byte) (key []byte, value []byte) {
 	k, v, flags := c.seek(seek)
 
 	// If we ended up after the last element of a page then move to the next one.
-	if ref := &c.stack[len(c.stack)-1]; ref.index >= ref.count() {
+	if ref := &c.stack[len(c.stack)-1]; ref.index >= ref.count() { //超出范围，定位到了下一个node??
 		k, v, flags = c.next()
 	}
 
 	if k == nil {
 		return nil, nil
 	} else if (flags & uint32(bucketLeafFlag)) != 0 {
-		return k, nil
+		return k, nil // 子桶 只返回 key??
 	}
 	return k, v
 }
 
 // Delete removes the current key/value under the cursor from the bucket.
 // Delete fails if current key/value is a bucket or if the transaction is not writable.
+// 删除之前，必然先经过了查找
 func (c *Cursor) Delete() error {
 	if c.bucket.tx.db == nil {
 		return ErrTxClosed
@@ -156,7 +159,7 @@ func (c *Cursor) seek(seek []byte) (key []byte, value []byte, flags uint32) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
 
 	// Start from root page/node and traverse to correct page.
-	c.stack = c.stack[:0]
+	c.stack = c.stack[:0]         // 重置栈
 	c.search(seek, c.bucket.root) // 从根页面开始搜索
 
 	// If this is a bucket then return a nil value.
@@ -218,9 +221,10 @@ func (c *Cursor) next() (key []byte, value []byte, flags uint32) {
 		for i = len(c.stack) - 1; i >= 0; i-- {
 			elem := &c.stack[i]
 			if elem.index < elem.count()-1 {
-				elem.index++
+				elem.index++ // 往右走
 				break
 			}
+			// 往上走
 		}
 
 		// If we've hit the root page then stop and return. This will leave the
@@ -231,12 +235,12 @@ func (c *Cursor) next() (key []byte, value []byte, flags uint32) {
 
 		// Otherwise start from where we left off in the stack and find the
 		// first element of the first leaf page.
-		c.stack = c.stack[:i+1]
-		c.first() // 又去找 最左的？？？
+		c.stack = c.stack[:i+1] // 缩小栈
+		c.first()               // 又去找当前node.index 下的最小节点
 
 		// If this is an empty page then restart and move back up the stack.
 		// https://github.com/boltdb/bolt/issues/450
-		if c.stack[len(c.stack)-1].count() == 0 {
+		if c.stack[len(c.stack)-1].count() == 0 { // 跳过空的node
 			continue
 		}
 
@@ -269,6 +273,7 @@ func (c *Cursor) search(key []byte, pgid pgid) {
 
 func (c *Cursor) searchNode(key []byte, n *node) {
 	var exact bool
+	// 找到 f(i) == true, 的最小索引
 	index := sort.Search(len(n.inodes), func(i int) bool {
 		// TODO(benbjohnson): Optimize this range search. It's a bit hacky right now.
 		// sort.Search() finds the lowest index where f() != -1 but we need the highest index.
@@ -276,9 +281,9 @@ func (c *Cursor) searchNode(key []byte, n *node) {
 		if ret == 0 {
 			exact = true
 		}
-		return ret != -1
+		return ret != -1 // n.inodes[i].key >= key
 	})
-	if !exact && index > 0 {
+	if !exact && index > 0 { // n.inodes[i].key > key, 所以要在前一个node, 除非已经是第一个了
 		index--
 	}
 	c.stack[len(c.stack)-1].index = index
@@ -302,8 +307,8 @@ func (c *Cursor) searchPage(key []byte, p *page) {
 		return ret != -1
 	})
 
-	// [key1, key, key4), [key4(index), key5)
-	if !exact && index > 0 { // 没有准确匹配， 说明index是 > key的元素的, key不属于key4,key5, 属于 [key1, key4)
+	// n.inodes[i].key > key, 所以要在前一个node, 除非已经是第一个了
+	if !exact && index > 0 { // 没有准确匹配， 说明index是 > key的元素的
 		index--
 	}
 	c.stack[len(c.stack)-1].index = index
@@ -319,9 +324,9 @@ func (c *Cursor) nsearch(key []byte) {
 
 	// If we have a node then search its inodes.
 	if n != nil {
-		// 二分查找, [key, +00) 的 最小索引
+		// 二分查找, [key, +无限大) 的 最小索引
 		index := sort.Search(len(n.inodes), func(i int) bool {
-			return bytes.Compare(n.inodes[i].key, key) != -1 // nkey >= key, key <= nodekey
+			return bytes.Compare(n.inodes[i].key, key) != -1 // n.inodes[i].key >= key
 		})
 		e.index = index
 		return
@@ -340,7 +345,7 @@ func (c *Cursor) keyValue() ([]byte, []byte, uint32) {
 	ref := &c.stack[len(c.stack)-1]
 
 	// If the cursor is pointing to the end of page/node then return nil.
-	if ref.count() == 0 || ref.index >= ref.count() {
+	if ref.count() == 0 || ref.index >= ref.count() { // 没有node, 或者超出了范围
 		return nil, nil, 0
 	}
 

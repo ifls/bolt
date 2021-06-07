@@ -30,10 +30,10 @@ const DefaultFillPercent = 0.5
 type Bucket struct {
 	*bucket                     // 内嵌
 	tx       *Tx                // the associated transaction
-	buckets  map[string]*Bucket // subbucket cache  子桶缓存 使用名字 作为key 映射的
+	buckets  map[string]*Bucket // subbucket cache  子桶，缓存操作过的桶 使用名字 作为key 映射的
 	page     *page              // inline page reference
 	rootNode *node              // 根节点 materialized具体化 node for the root page.
-	nodes    map[pgid]*node     // node cache 缓存 从页面 创建出来的 node
+	nodes    map[pgid]*node     // node cache 缓存操作过的node 从页面 创建出来的 node
 
 	// Sets the threshold for filling nodes when they split. By default,
 	// the bucket will fill to 50% but it can be useful to increase this
@@ -190,7 +190,7 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 	}
 	var value = bucket.write() // 一个 桶 作为普通value内嵌
 
-	// Insert into node.
+	// Insert into node.  old key 和 new key 要独立，不然传两个参数没意义
 	key = cloneBytes(key)
 	c.node().put(key, key, value, 0, bucketLeafFlag) // 标记为桶
 
@@ -199,6 +199,7 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 	// to be treated as a regular, non-inline bucket for the rest of the tx.
 	b.page = nil
 
+	// 为什么不直接返回 &bucket ??
 	return b.Bucket(key), nil
 }
 
@@ -257,7 +258,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 	// Release all bucket pages to freelist.
 	child.nodes = nil
 	child.rootNode = nil
-	child.free()
+	child.free() // 释放所使用的page
 
 	// Delete the node if we have a matching key.
 	c.node().del(key)
@@ -549,10 +550,10 @@ func (b *Bucket) spill() error {
 		// like a normal bucket and make the parent value a pointer to the page.
 		var value []byte
 		if child.inlineable() { // 如果子 bucket 可以内嵌，则将其所有数据序列化后内嵌到父 bucket 相应叶子节点
-			child.free() // 释放页面
+			child.free() // 自桶内嵌，释放之前占用的page
 			value = child.write()
 		} else {
-			if err := child.spill(); err != nil {
+			if err := child.spill(); err != nil { // 递归
 				return err
 			}
 
@@ -577,10 +578,12 @@ func (b *Bucket) spill() error {
 		if flags&bucketLeafFlag == 0 {
 			panic(fmt.Sprintf("unexpected bucket header flag: %x", flags))
 		}
+		// 重新写入子桶
 		c.node().put([]byte(name), []byte(name), value, 0, bucketLeafFlag)
 	}
 
 	// Ignore if there's not a materialized root node.
+	// 如果该 bucket 没有缓存任何 node（说明没有数据变动），则终止调整
 	if b.rootNode == nil {
 		return nil
 	}
@@ -590,12 +593,13 @@ func (b *Bucket) spill() error {
 	if err := b.rootNode.spill(); err != nil {
 		return err
 	}
-	b.rootNode = b.rootNode.root() // 更新 新 root
 
+	b.rootNode = b.rootNode.root() // 更新 新 root
 	// Update the root node for this bucket.
 	if b.rootNode.pgid >= b.tx.meta.pgid {
 		panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", b.rootNode.pgid, b.tx.meta.pgid))
 	}
+	// 由于调整会增量写，造成本 bucket 根节点引用变更，因此需要更新 b.root
 	b.root = b.rootNode.pgid
 
 	return nil
@@ -652,13 +656,13 @@ func (b *Bucket) write() []byte {
 // rebalance attempts to balance all nodes.
 // 合并节点 该函数旨在将过小（key数太少或者总体尺寸太小）的节点合并到邻居节点上
 // 只有在 Tx.Commit 函数里会调用
-func (b *Bucket) rebalance() {
-	// 对所有子node进行合并
+func (b *Bucket) rebalance() { // 自上而下
+	// 对所有操作过的子node进行合并
 	for _, n := range b.nodes {
 		n.rebalance()
 	}
 
-	// 只对 缓存的子bucket进行调整??
+	// 只对操作过的子bucket进行调整
 	for _, child := range b.buckets {
 		child.rebalance() // 递归
 	}

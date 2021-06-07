@@ -61,28 +61,28 @@ type DB struct {
 	// A panic is issued if the database is in an inconsistent state. This
 	// flag has a large performance impact so it should only be used for
 	// debugging purposes.
-	StrictMode bool
+	StrictMode bool // 用于调试，每次写都会校验数据库的状态
 
 	// Setting the NoSync flag will cause the database to skip fsync()
 	// calls after each commit. This can be useful when bulk loading data
 	// into a database and you can restart the bulk load in the event of
-	// a system failure or database corruption. Do not set this flag for
-	// normal use.
+	// a system failure or database corruption.
+	// Do not set this flag for normal use.
 	//
 	// If the package global IgnoreNoSync constant is true, this value is
 	// ignored.  See the comment on that constant for more details.
 	//
 	// THIS IS UNSAFE. PLEASE USE WITH CAUTION.
-	NoSync bool
+	NoSync bool // true 表示不持久化, 只适用于可回滚重试的批量导入数据的情况
 
 	// When true, skips syncing freelist to disk. This improves the database
 	// write performance under normal operation, but requires a full database
 	// re-sync during recovery.
-	NoFreelistSync bool
+	NoFreelistSync bool // 跳过 把freelist 同步到磁盘, 提高写性能， 但是恢复的时候 需要全量重新同步
 
-	// FreelistType sets the backend freelist type. There are two options. Array which is simple but endures
-	// dramatic performance degradation if database is large and framentation in freelist is common.
-	// The alternative one is using hashmap, it is faster in almost all circumstances
+	// FreelistType sets the backend freelist type. There are two options.
+	// Array which is simple but endures dramatic performance degradation if database is large and framentation in freelist is common.
+	// The alternative one is using hashmap, it is faster in almost all circumstances情况
 	// but it doesn't guarantee that it offers the smallest page id available. In normal case it is safe.
 	// The default type is array
 	FreelistType FreelistType
@@ -96,7 +96,7 @@ type DB struct {
 	NoGrowSync bool
 
 	// If you want to read the entire database fast, you can set MmapFlag to
-	// syscall.MAP_POPULATE on Linux 2.6.23+ for sequential read-ahead.
+	// syscall.MAP_POPULATE on Linux 2.6.23+ for sequential read-ahead. 建议内核预读
 	MmapFlags int
 
 	// MaxBatchSize is the maximum size of a batch. Default value is
@@ -105,7 +105,7 @@ type DB struct {
 	// If <=0, disables batching.
 	//
 	// Do not change concurrently with calls to Batch.
-	MaxBatchSize int
+	MaxBatchSize int // 批处理任务，积累到此数量，立即提交
 
 	// MaxBatchDelay is the maximum delay before a batch starts.
 	// Default value is copied from DefaultMaxBatchDelay in Open.
@@ -113,14 +113,14 @@ type DB struct {
 	// If <=0, effectively disables batching.
 	//
 	// Do not change concurrently with calls to Batch.
-	MaxBatchDelay time.Duration
+	MaxBatchDelay time.Duration // 此时长后，立即触发批处理任务开始执行
 
 	// AllocSize is the amount of space allocated when the database
-	// needs to create new pages. This is done to amortize the cost
+	// needs to create new pages. This is done to amortize the cost  这样做是为了均摊 系统调用的成本
 	// of truncate() and fsync() when growing the data file.
-	AllocSize int
+	AllocSize int // grow() 一次扩容的增量，默认 16M
 
-	path     string
+	path     string // file.Name() 是绝对路径
 	openFile func(string, int, os.FileMode) (*os.File, error)
 	file     *os.File
 
@@ -129,32 +129,33 @@ type DB struct {
 	data    *[maxMapSize]byte
 	datasz  int
 
+	// grow 函数才会改变此值
 	filesz int // current on disk file size
 
-	// 缓存元数据
+	// 缓存两页元数据， 不同事务交换写
 	meta0 *meta
 	meta1 *meta
 
-	pageSize int
-	opened   bool
+	pageSize int   // 一页大小
+	opened   bool  //防重入标志
 	rwtx     *Tx   // 单写, 唯一的写事务
 	txs      []*Tx // 保存 当前正在运行的读事务
-	stats    Stats
+
+	stats Stats
 
 	freelist     *freelist
 	freelistLoad sync.Once
 
 	pagePool sync.Pool // 页面缓存
 
+	// 批处理
 	batchMu sync.Mutex
-	batch   *batch
+	batch   *batch // 一次只有串行一个批处理对象
 
-	// 单写，不是读写锁
+	// 单写，不是读写锁， 只是阻止写和关闭的并发执行， 读写完全不影响，不需要控制一写多读的并发写
 	rwlock sync.Mutex // Allows only one writer at a time.
 
-	metalock sync.Mutex // Protects meta page access.
-
-	// 读写锁
+	metalock sync.Mutex   // Protects meta page access.
 	mmaplock sync.RWMutex // Protects mmap access during remapping.
 	statlock sync.RWMutex // Protects stats access.
 
@@ -200,9 +201,9 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	db.FreelistType = options.FreelistType
 
 	// Set default values for later DB operations.
-	db.MaxBatchSize = DefaultMaxBatchSize
-	db.MaxBatchDelay = DefaultMaxBatchDelay
-	db.AllocSize = DefaultAllocSize
+	db.MaxBatchSize = DefaultMaxBatchSize   // 1000
+	db.MaxBatchDelay = DefaultMaxBatchDelay // 10ms
+	db.AllocSize = DefaultAllocSize         // 16M
 
 	flag := os.O_RDWR
 	if options.ReadOnly {
@@ -218,6 +219,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 
 	// Open data file and separate sync handler for metadata writes.
 	var err error
+	// 不 truncate, 复用文件内容， 文件不存在则创建
 	if db.file, err = db.openFile(path, flag|os.O_CREATE, mode); err != nil {
 		_ = db.close()
 		return nil, err
@@ -257,7 +259,8 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 			return nil, err
 		}
 	} else {
-		// Read the first meta page to determine the page size. 读取第一个元数据page 确认之前的 数据page的大小
+		// 读取第一个元数据page 确认之前的 数据page的大小
+		// Read the first meta page to determine the page size.
 		var buf [0x1000]byte // 4KB
 		// If we can't read the page size, but can read a page, assume
 		// it's the same as the OS or one given -- since that's how the
@@ -285,7 +288,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		},
 	}
 
-	// Memory map the data file. 映射文件到内存
+	// Memory map the data file. 映射文件到内存， 默认大小，都是0
 	if err := db.mmap(options.InitialMmapSize); err != nil {
 		_ = db.close()
 		return nil, err
@@ -295,10 +298,12 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		return db, nil
 	}
 
+	// 只读的话，不需要 管理空闲链表
 	db.loadFreelist()
 
 	// Flush freelist when transitioning from no sync to sync so
 	// NoFreelistSync unaware boltdb can open the db later.
+	// 之前是不写freelist， 现在改为了写freelist，这里立刻就要把freelist 页提交到文件里
 	if !db.NoFreelistSync && !db.hasSyncedFreelist() {
 		tx, err := db.Begin(true)
 		if tx != nil {
@@ -320,7 +325,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 func (db *DB) loadFreelist() {
 	db.freelistLoad.Do(func() {
 		db.freelist = newFreelist(db.FreelistType)
-		if !db.hasSyncedFreelist() {
+		if !db.hasSyncedFreelist() { // 写入的时候掉过了 写入freelist 页， 恢复的时候，就需要扫描整个db取恢复
 			// Reconstruct free list by scanning the DB.
 			db.freelist.readIDs(db.freepages())
 		} else {
@@ -361,6 +366,7 @@ func (db *DB) mmap(minsz int) error {
 	}
 
 	// Dereference all mmap references before unmapping.
+	// 这里只用于扩容的时候
 	if db.rwtx != nil {
 		db.rwtx.root.dereference() // 全部数据重新分配内存到堆上的其他地方
 	}
@@ -376,6 +382,8 @@ func (db *DB) mmap(minsz int) error {
 	if err := mmap(db, size); err != nil {
 		return err
 	}
+
+	//整个树node使用的内存，都不是在映射内存空间内
 
 	// Save references to the meta pages.
 	db.meta0 = db.page(0).meta()
@@ -444,7 +452,7 @@ func (db *DB) init() error {
 
 	// 初始化时， 4个页面， 2个meta, 一个 freelist，一个根node的叶子结点数据页
 	buf := make([]byte, db.pageSize*4)
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 2; i++ { // 两个元数据页，是一样的
 		p := db.pageInBuffer(buf[:], pgid(i)) // pgid从0开始
 		p.id = pgid(i)
 		// meta页 头的 count和overflow为0
@@ -456,9 +464,9 @@ func (db *DB) init() error {
 		m.version = version
 		m.pageSize = uint32(db.pageSize)
 		m.freelist = 2           // 记录 freelist的起始页
-		m.root = bucket{root: 3} //第3页是根页面
-		m.pgid = 4
-		m.txid = txid(i) // 分别是0 和1
+		m.root = bucket{root: 3} //第3页是根页面, 就是下面的第一个叶子节点
+		m.pgid = 4               // 下一个 页面 id 是4
+		m.txid = txid(i)         // 分别是0 和1
 		m.checksum = m.sum64()
 	}
 
@@ -466,18 +474,19 @@ func (db *DB) init() error {
 	p := db.pageInBuffer(buf[:], pgid(2))
 	p.id = pgid(2)
 	p.flags = freelistPageFlag
-	p.count = 0 // 一开始没有空闲页
+	p.count = 0 // 一开始没有空闲页, 值为0
 
 	// Write an empty leaf page at page 4.
 	p = db.pageInBuffer(buf[:], pgid(3))
 	p.id = pgid(3)
-	p.flags = leafPageFlag
-	p.count = 0 // 空页， 元素数量为0
+	p.flags = leafPageFlag // 叶子节点
+	p.count = 0            // 空页， 元素数量为0
 
 	// Write the buffer to our data file. 写到文件
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
 		return err
 	}
+
 	// 立即开始持久化
 	if err := fdatasync(db); err != nil {
 		return err
@@ -568,15 +577,15 @@ func (db *DB) beginTx() (*Tx, error) {
 	// Lock the meta pages while we initialize the transaction. We obtain
 	// the meta lock before the mmap lock because that's the order that the
 	// write transaction will obtain them.
-	db.metalock.Lock()
+	db.metalock.Lock() // 对元数据上锁，避免更新
 
 	// Obtain a read-only lock on the mmap. When the mmap is remapped it will
 	// obtain a write lock so all transactions must finish before it can be
 	// remapped.
-	db.mmaplock.RLock() // 读事务 加上 读锁
+	db.mmaplock.RLock() // 读锁， 阻止重新mmap
 
 	// Exit if the database is not open yet.
-	if !db.opened {
+	if !db.opened { // 不能提到最前面??
 		db.mmaplock.RUnlock()
 		db.metalock.Unlock()
 		return nil, ErrDatabaseNotOpen
@@ -591,7 +600,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	n := len(db.txs)
 
 	// Unlock the meta pages.
-	db.metalock.Unlock()
+	db.metalock.Unlock() // 解锁元数据
 
 	// Update the transaction stats.
 	db.statlock.Lock()
@@ -604,6 +613,7 @@ func (db *DB) beginTx() (*Tx, error) {
 
 func (db *DB) beginRWTx() (*Tx, error) {
 	// If the database was opened with Options.ReadOnly, return an error.
+	// 这个字段初始化都不会改， 不用锁保护
 	if db.readOnly {
 		return nil, ErrDatabaseReadOnly
 	}
@@ -618,6 +628,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	defer db.metalock.Unlock()
 
 	// Exit if the database is not open yet.
+	// 这个会被改，所以要加锁访问，避免在关闭数据库的同时，有在执行的写事务
 	if !db.opened {
 		db.rwlock.Unlock()
 		return nil, ErrDatabaseNotOpen
@@ -628,7 +639,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t.init(db)
 	db.rwtx = t
 
-	// 释放只读事务的 page
+	// 释放之前的只读事务锁占用的 page
 	db.freePages()
 	return t, nil
 }
@@ -636,22 +647,22 @@ func (db *DB) beginRWTx() (*Tx, error) {
 // freePages releases any pages associated with closed read-only transactions.
 func (db *DB) freePages() {
 	// Free all pending pages prior to earliest open transaction.
-	sort.Sort(txsById(db.txs)) // 先排序
+	sort.Sort(txsById(db.txs)) // 按txid 排序
 	minid := txid(0xFFFFFFFFFFFFFFFF)
 	if len(db.txs) > 0 {
-		minid = db.txs[0].meta.txid // 最小的读事务id
+		minid = db.txs[0].meta.txid
 	}
-
 	if minid > 0 {
-		db.freelist.release(minid - 1) // minid - 1, 表示所有已释放的 读事务id
+		db.freelist.release(minid - 1) // [0, minid - 1]
 	}
 	// Release unused txid extents.
 	for _, t := range db.txs {
-		db.freelist.releaseRange(minid, t.meta.txid-1)
+		db.freelist.releaseRange(minid, t.meta.txid-1) // [minid, txid - 1]
 		minid = t.meta.txid + 1
 	}
-	db.freelist.releaseRange(minid, txid(0xFFFFFFFFFFFFFFFF))
+	db.freelist.releaseRange(minid, txid(0xFFFFFFFFFFFFFFFF)) // [minid, 无限大)
 	// Any page both allocated and freed in an extent is safe to release.
+	// [0, minid-1, minid, txid-1, txid, txid2-1, txid, 0xFFFFFFFFFFFFFFFF)
 }
 
 type txsById []*Tx
@@ -663,7 +674,7 @@ func (t txsById) Less(i, j int) bool { return t[i].meta.txid < t[j].meta.txid }
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
 	// Release the read lock on the mmap.
-	db.mmaplock.RUnlock() // 释放读事务 加的 读锁
+	db.mmaplock.RUnlock() // 释放读锁
 
 	// Use the meta lock to restrict access to the DB object.
 	db.metalock.Lock()
@@ -672,9 +683,9 @@ func (db *DB) removeTx(tx *Tx) {
 	for i, t := range db.txs {
 		if t == tx {
 			last := len(db.txs) - 1
-			db.txs[i] = db.txs[last]
+			db.txs[i] = db.txs[last] // 交换删除
 			db.txs[last] = nil
-			db.txs = db.txs[:last] // 交换删除,  所以 txs 里 txid 不是 有序的
+			db.txs = db.txs[:last]
 			break
 		}
 	}
@@ -705,7 +716,7 @@ func (db *DB) Update(fn func(*Tx) error) error {
 
 	// Make sure the transaction rolls back in the event of a panic.
 	defer func() {
-		if t.db != nil {
+		if t.db != nil { // 如果panic，这里只负责回滚，不复制 recover?
 			t.rollback()
 		}
 	}()
@@ -758,20 +769,16 @@ func (db *DB) View(fn func(*Tx) error) error {
 // Batch calls fn as part of a batch. It behaves similar to Update,
 // except:
 // 多个fn 会合并在一个事务里进行批处理后, 再一次提交
-// 1. concurrent Batch calls can be combined into a single Bolt
-// transaction.
+// 1. concurrent Batch calls can be combined into a single Bolt transaction.
 //
-// 2. the function passed to Batch may be called multiple times,
-// regardless of whether it returns error or not.
+// 2. the function passed to Batch may be called multiple times, regardless of whether it returns error or not.
 //
 // This means that Batch function side effects must be idempotent and
-// take permanent effect only after a successful return is seen in
-// caller.
+// take permanent effect only after a successful return is seen in caller.
 //
-// The maximum batch size and delay can be adjusted with DB.MaxBatchSize
-// and DB.MaxBatchDelay, respectively.
+// The maximum batch size and delay can be adjusted with DB.MaxBatchSize and DB.MaxBatchDelay, respectively.
 //
-// Batch is only useful when there are multiple goroutines calling it.
+// Batch is only useful when there are multiple goroutines calling it. 多goroutine并发的时候才有用，但goroutine会直接阻塞
 func (db *DB) Batch(fn func(*Tx) error) error {
 	errCh := make(chan error, 1)
 
@@ -781,10 +788,10 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		db.batch = &batch{
 			db: db,
 		}
-		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
+		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger) // 超时触发
 	}
 	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
-	if len(db.batch.calls) >= db.MaxBatchSize {
+	if len(db.batch.calls) >= db.MaxBatchSize { // 超量触发
 		// wake up batch, it's ready to run
 		go db.batch.trigger()
 	}
@@ -831,6 +838,7 @@ retry:
 		var failIdx = -1
 		err := b.db.Update(func(tx *Tx) error {
 			for i, c := range b.calls {
+				// safelyCall 防止 panic
 				if err := safelyCall(c.fn, tx); err != nil {
 					failIdx = i
 					return err
@@ -844,15 +852,16 @@ retry:
 			// safe to shorten b.calls here because db.batch no longer
 			// points to us, and we hold the mutex anyway.
 			c := b.calls[failIdx]
-			b.calls[failIdx], b.calls = b.calls[len(b.calls)-1], b.calls[:len(b.calls)-1]
+			b.calls[failIdx], b.calls = b.calls[len(b.calls)-1], b.calls[:len(b.calls)-1] // 交换到最后面
 			// tell the submitter re-run it solo, continue with the rest of the batch
-			c.err <- trySolo
+			c.err <- trySolo // 通知单独重试
 			continue retry
 		}
 
+		// failIdx == -1 说明全部成功，或者 Update本身出错了
 		// pass success, or bolt internal errors, to all callers
 		for _, c := range b.calls {
-			c.err <- err
+			c.err <- err // 上面被单独重试的，不会再处理这个错误了
 		}
 		break retry
 	}
@@ -887,6 +896,7 @@ func safelyCall(fn func(*Tx) error, tx *Tx) (err error) {
 //
 // This is not necessary under normal operation, however, if you use NoSync
 // then it allows you to force the database file to sync against the disk.
+// 主动同步数据到磁盘
 func (db *DB) Sync() error { return fdatasync(db) }
 
 // Stats retrieves ongoing performance stats for the database.
@@ -960,7 +970,7 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 	p.id = db.rwtx.meta.pgid
 	var minsz = int((p.id+pgid(count))+1) * db.pageSize
 	if minsz >= db.datasz {
-		// 映射更多内存, 会对 mmap 加上写锁
+		// 映射更多内存
 		if err := db.mmap(minsz); err != nil {
 			return nil, fmt.Errorf("mmap allocate error: %s", err)
 		}
@@ -975,27 +985,30 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 // grow grows the size of the database to the given sz.
 func (db *DB) grow(sz int) error {
 	// Ignore if the new size is less than available file size.
-	if sz <= db.filesz {
+	if sz <= db.filesz { // 只扩容
 		return nil
 	}
 
 	// If the data is smaller than the alloc size then only allocate what's needed.
 	// Once it goes over the allocation size then allocate in chunks.
 	if db.datasz < db.AllocSize {
-		sz = db.datasz
+		sz = db.datasz // 当前被映射进来的大小，不用增长 mmap length
 	} else {
-		sz += db.AllocSize
+		sz += db.AllocSize // 一切扩容的增量
 	}
 
 	// Truncate and fsync to ensure file size metadata is flushed.
 	// https://github.com/boltdb/bolt/issues/284
+	// nogrow 默认是false, 所以一般会走这个逻辑
 	if !db.NoGrowSync && !db.readOnly {
 		if runtime.GOOS != "windows" {
-			// truncate 可以 增加空间??
+			// truncate 可以 增加空间, 读扩大的会返回0，如果是缩小，尾部的会被丢弃
 			if err := db.file.Truncate(int64(sz)); err != nil {
 				return fmt.Errorf("file resize error: %s", err)
 			}
 		}
+		// linux ext-3 ext-4, 在文件大小改变的情况下，必须使用fsync 持久化， 不能依赖fdatasync
+		// 因为 不会等日志记录完成，fdatasync就会返回， 长度更新的日志反而在数据更新之后，如果中途奔溃，长度信息丢失，也就是发生数据丢失
 		if err := db.file.Sync(); err != nil {
 			return fmt.Errorf("file sync error: %s", err)
 		}
@@ -1046,7 +1059,7 @@ type Options struct {
 	// Timeout is the amount of time to wait to obtain a file lock.
 	// When set to zero it will wait indefinitely. This option is only
 	// available on Darwin and Linux.
-	Timeout time.Duration
+	Timeout time.Duration // flock的超时，0表示无超时，这个超时都是bolt的逻辑，和系统调用无关
 
 	// Sets the DB.NoGrowSync flag before memory mapping the file.
 	NoGrowSync bool

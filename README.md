@@ -644,7 +644,7 @@ if err != nil {
 
 ### Mobile Use (iOS/Android)
 
-Bolt is able to run on mobile devices by leveraging the binding feature of the
+Bolt is able to run on mobile devices by leveraging借力 the binding feature of the
 [gomobile](https://github.com/golang/mobile) tool. Create a struct that will
 contain your database logic and a reference to a `*bolt.DB` with a initializing
 constructor that takes in a filepath where the database file will be stored.
