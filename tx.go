@@ -143,6 +143,7 @@ func (tx *Tx) OnCommit(fn func()) {
 // Commit writes all changes to disk and updates the meta page.
 // Returns an error if a disk write error occurs, or if Commit is
 // called on a read-only transaction.
+// 写事务提交如何不影响读事务??
 func (tx *Tx) Commit() error {
 	// managed 状态 不允许手动提交
 	_assert(!tx.managed, "managed tx commit not allowed")

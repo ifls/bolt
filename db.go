@@ -17,10 +17,10 @@ import (
 const maxMmapStep = 1 << 30 // 1GB
 
 // The data file format version.
-const version = 2
+const version = 2 // 用于破坏性更新时区分的版本号
 
 // Represents a marker value to indicate that a file is a Bolt DB.
-const magic uint32 = 0xED0CDAED
+const magic uint32 = 0xED0CDAED // 标记一个文件 是 bolb db 数据库
 
 const pgidNoFreelist pgid = 0xffffffffffffffff
 
@@ -129,7 +129,7 @@ type DB struct {
 	data    *[maxMapSize]byte
 	datasz  int
 
-	// grow 函数才会改变此值
+	// 只有 grow 函数才会改变此值
 	filesz int // current on disk file size
 
 	// 缓存两页元数据， 不同事务交换写
@@ -421,20 +421,20 @@ func (db *DB) mmapSize(size int) (int, error) {
 	}
 
 	// Verify the requested size is not above the maximum allowed.
-	if size > maxMapSize {
+	if size > maxMapSize { // 256TB
 		return 0, fmt.Errorf("mmap too large")
 	}
 
 	// If larger than 1GB then grow by 1GB at a time.
 	sz := int64(size)
-	if remainder := sz % int64(maxMmapStep); remainder > 0 {
+	if remainder := sz % int64(maxMmapStep); remainder > 0 { // 保存1GB的倍数
 		sz += int64(maxMmapStep) - remainder
 	}
 
 	// Ensure that the mmap size is a multiple of the page size.
 	// This should always be true since we're incrementing in MBs.
 	pageSize := int64(db.pageSize)
-	if (sz % pageSize) != 0 {
+	if (sz % pageSize) != 0 { // 这也是一种向上取整的方式
 		sz = ((sz / pageSize) + 1) * pageSize
 	}
 
@@ -949,6 +949,8 @@ func (db *DB) meta() *meta {
 }
 
 // allocate returns a contiguous block of memory starting at a given page.
+// 分配count 个连续 page 出去
+// 和 grow的区别是什么??
 func (db *DB) allocate(txid txid, count int) (*page, error) {
 	// Allocate a temporary buffer for the page.
 	var buf []byte
@@ -968,8 +970,8 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 
 	// Resize mmap() if we're at the end.
 	p.id = db.rwtx.meta.pgid
-	var minsz = int((p.id+pgid(count))+1) * db.pageSize
-	if minsz >= db.datasz {
+	var minsz = int((p.id+pgid(count))+1) * db.pageSize // 为什么要+1??
+	if minsz >= db.datasz {                             // == 也 重新 mmap??
 		// 映射更多内存
 		if err := db.mmap(minsz); err != nil {
 			return nil, fmt.Errorf("mmap allocate error: %s", err)
@@ -991,7 +993,7 @@ func (db *DB) grow(sz int) error {
 
 	// If the data is smaller than the alloc size then only allocate what's needed.
 	// Once it goes over the allocation size then allocate in chunks.
-	if db.datasz < db.AllocSize {
+	if db.datasz < db.AllocSize { // 让 filesz 和 filesz 相等??
 		sz = db.datasz // 当前被映射进来的大小，不用增长 mmap length
 	} else {
 		sz += db.AllocSize // 一切扩容的增量
