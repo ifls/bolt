@@ -8,9 +8,11 @@ import (
 
 // txPending holds a list of pgids and corresponding allocation txns that are pending to be freed.
 type txPending struct {
-	ids              []pgid
-	alloctx          []txid // txids allocating the ids
-	lastReleaseBegin txid   // beginning txid of last matching releaseRange
+	// 下面两个是关联数组
+	ids     []pgid
+	alloctx []txid // txids allocating the ids
+
+	lastReleaseBegin txid // beginning txid of last matching releaseRange
 }
 
 // pidSet holds the set of starting pgids which have the same span size
@@ -148,11 +150,11 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 				f.ids = f.ids[:len(f.ids)-n]
 			}
 
-			// Remove from the free cache.
+			// Remove from the free_cache.
 			for i := pgid(0); i < pgid(n); i++ {
 				delete(f.cache, initial+i)
 			}
-			f.allocs[initial] = txid // 在起始pgid 记录 txid
+			f.allocs[initial] = txid // 在起始pgid 记录 txid,, 只有写事务 才会分配 page
 			return initial
 		}
 
@@ -177,6 +179,7 @@ func (f *freelist) free(txid txid, p *page) {
 
 	allocTxid, ok := f.allocs[p.id]
 	if ok {
+		// 释放写事务
 		delete(f.allocs, p.id)
 	} else if (p.flags & freelistPageFlag) != 0 { // 此页是 freelist 页
 		// Freelist is always allocated by prior tx.
@@ -191,11 +194,11 @@ func (f *freelist) free(txid txid, p *page) {
 		}
 
 		// Add to the freelist and cache.
-		txp.ids = append(txp.ids, id) // 放回空闲页
+		txp.ids = append(txp.ids, id) // 放回待处理的事务 空闲页
 
 		txp.alloctx = append(txp.alloctx, allocTxid)
 
-		f.cache[id] = true // 去重
+		f.cache[id] = true // 放回, 表示 目前不被写事务 使用到
 	}
 }
 
@@ -220,28 +223,37 @@ func (f *freelist) releaseRange(begin, end txid) {
 	if begin > end {
 		return
 	}
+
 	var m pgids
+
 	for tid, txp := range f.pending {
 		if tid < begin || tid > end {
 			continue
 		}
+
 		// Don't recompute freed pages if ranges haven't updated.
 		if txp.lastReleaseBegin == begin {
 			continue
 		}
+
 		for i := 0; i < len(txp.ids); i++ {
 			if atx := txp.alloctx[i]; atx < begin || atx > end {
 				continue
 			}
-			m = append(m, txp.ids[i])
+			m = append(m, txp.ids[i]) // 保存回收的page id
+
+			// 关联数组, 要平行删除
+			// 交换删除第i个
 			txp.ids[i] = txp.ids[len(txp.ids)-1]
 			txp.ids = txp.ids[:len(txp.ids)-1]
 			txp.alloctx[i] = txp.alloctx[len(txp.alloctx)-1]
 			txp.alloctx = txp.alloctx[:len(txp.alloctx)-1]
-			i--
+			i-- // 对冲i++
 		}
-		txp.lastReleaseBegin = begin
-		if len(txp.ids) == 0 {
+
+		txp.lastReleaseBegin = begin // 避免 多个txdi 对应 重复的txp
+
+		if len(txp.ids) == 0 { // 0 表示已经处理完
 			delete(f.pending, tid)
 		}
 	}
@@ -258,7 +270,8 @@ func (f *freelist) rollback(txid txid) { // 释放 一个tx的所有页面, 因�
 
 	var m pgids
 	for i, pgid := range txp.ids {
-		delete(f.cache, pgid)
+		delete(f.cache, pgid) // 为什么这里要删掉??
+
 		tx := txp.alloctx[i]
 		if tx == 0 {
 			continue
@@ -408,14 +421,16 @@ func (f *freelist) noSyncReload(pgids []pgid) {
 	f.readIDs(a)
 }
 
-// 重建 map 索引
+// 重建 map 索引,  cache 包含 free 和 pending
 // reindex rebuilds the free cache based on available and pending free lists.
 func (f *freelist) reindex() {
 	ids := f.getFreePageIDs()
+
 	f.cache = make(map[pgid]bool, len(ids))
 	for _, id := range ids {
 		f.cache[id] = true
 	}
+
 	for _, txp := range f.pending {
 		for _, pendingID := range txp.ids {
 			f.cache[pendingID] = true
