@@ -722,6 +722,7 @@ func (b *Bucket) free() {
 }
 
 // dereference removes all references to the old mmap.
+// 递归 重新分配到堆上
 func (b *Bucket) dereference() {
 	if b.rootNode != nil {
 		b.rootNode.root().dereference()

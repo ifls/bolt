@@ -22,13 +22,13 @@ const version = 2 // 用于破坏性更新时区分的版本号
 // Represents a marker value to indicate that a file is a Bolt DB.
 const magic uint32 = 0xED0CDAED // 标记一个文件 是 bolb db 数据库
 
-const pgidNoFreelist pgid = 0xffffffffffffffff
+const pgidNoFreelist pgid = 0xffffffffffffffff // 如果不提交freelist到磁盘，会设置此标志
 
-// IgnoreNoSync specifies whether the NoSync field of a DB is ignored when
-// syncing changes to a file.  This is required as some operating systems,
+// IgnoreNoSync specifies whether the NoSync field of a DB is ignored when syncing changes to a file.
+// This is required as some operating systems,
 // such as OpenBSD, do not have a unified buffer cache (UBC) and writes
 // must be synchronized using the msync(2) syscall.
-const IgnoreNoSync = runtime.GOOS == "openbsd"
+const IgnoreNoSync = runtime.GOOS == "openbsd" // openbsd 没有内核缓冲区，必须显示持久化到磁盘，否则数据必丢，而不是只是异常情况丢一点点
 
 // Default values if not set in a DB instance.
 const (
@@ -46,6 +46,7 @@ const flockRetryTimeout = 50 * time.Millisecond
 // FreelistType is the type of the freelist backend
 type FreelistType string
 
+// 字符串类型的 const 枚举值
 const (
 	// FreelistArrayType indicates backend freelist type is array
 	FreelistArrayType = FreelistType("array") // 默认选项是这个
@@ -73,12 +74,12 @@ type DB struct {
 	// ignored.  See the comment on that constant for more details.
 	//
 	// THIS IS UNSAFE. PLEASE USE WITH CAUTION.
-	NoSync bool // true 表示不持久化, 只适用于可回滚重试的批量导入数据的情况
+	NoSync bool // true 表示不立刻持久化(而是等操作系统定期回写脏页到磁盘), 只适用于可回滚重试的批量导入数据的情况
 
 	// When true, skips syncing freelist to disk. This improves the database
 	// write performance under normal operation, but requires a full database
 	// re-sync during recovery.
-	NoFreelistSync bool // 跳过 把freelist 同步到磁盘, 提高写性能， 但是恢复的时候 需要全量重新同步
+	NoFreelistSync bool // 跳过 把freelist 同步到磁盘, 提高写性能， 但是恢复的时候 需要全量扫描 读出 freelist
 
 	// FreelistType sets the backend freelist type. There are two options.
 	// Array which is simple but endures dramatic performance degradation if database is large and framentation in freelist is common.
@@ -93,7 +94,7 @@ type DB struct {
 	// bypasses a truncate() and fsync() syscall on remapping.
 	//
 	// https://github.com/boltdb/bolt/issues/284
-	NoGrowSync bool
+	NoGrowSync bool // 在 ext-3/ ext-4 上需要 fsync，而不能只是 fdatasync
 
 	// If you want to read the entire database fast, you can set MmapFlag to
 	// syscall.MAP_POPULATE on Linux 2.6.23+ for sequential read-ahead. 建议内核预读
@@ -125,21 +126,22 @@ type DB struct {
 	file     *os.File
 
 	// mmap 映射进来的内片
-	dataref []byte // mmap'ed readonly, write throws SEGV
+	dataref []byte // 不能修改，只用于读事务， mmap'ed readonly, write throws SEGV
 	data    *[maxMapSize]byte
-	datasz  int
+	datasz  int // 当前映射的读内存的大小
 
 	// 只有 grow 函数才会改变此值
-	filesz int // current on disk file size
+	filesz int // 磁盘文件大小，current on disk file size
 
 	// 缓存两页元数据， 不同事务交换写
 	meta0 *meta
 	meta1 *meta
 
-	pageSize int   // 一页大小
-	opened   bool  //防重入标志
-	rwtx     *Tx   // 单写, 唯一的写事务
-	txs      []*Tx // 保存 当前正在运行的读事务
+	pageSize int  // 一页大小
+	opened   bool // 防重入标志
+
+	rwtx *Tx   // 单写, 唯一的写事务
+	txs  []*Tx // 保存 当前正在运行的读事务
 
 	stats Stats
 
@@ -1024,6 +1026,7 @@ func (db *DB) IsReadOnly() bool {
 	return db.readOnly
 }
 
+// 全量扫描， 获取空闲的 page ids
 func (db *DB) freepages() []pgid {
 	tx, err := db.beginTx() // 只读事务
 	defer func() {
@@ -1037,7 +1040,7 @@ func (db *DB) freepages() []pgid {
 	}
 
 	reachable := make(map[pgid]*page)
-	nofreed := make(map[pgid]bool)
+	nofreed := make(map[pgid]bool) // 这个是没用的
 	ech := make(chan error)
 	go func() {
 		for e := range ech {
@@ -1048,6 +1051,7 @@ func (db *DB) freepages() []pgid {
 	close(ech)
 
 	var fids []pgid
+	// 从第三个page开始
 	for i := pgid(2); i < db.meta().pgid; i++ {
 		if _, ok := reachable[i]; !ok {
 			fids = append(fids, i)

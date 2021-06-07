@@ -649,7 +649,7 @@ func (tx *Tx) page(id pgid) *page {
 	}
 
 	// Otherwise return directly from the mmap.
-	return tx.db.page(id) // 可以从db里 随便拿??
+	return tx.db.page(id) // 返回只读 的 page
 }
 
 // forEachPage iterates over every page within a given page and executes a function.
@@ -663,7 +663,7 @@ func (tx *Tx) forEachPage(pgid pgid, depth int, fn func(*page, int)) {
 	if (p.flags & branchPageFlag) != 0 {
 		for i := 0; i < int(p.count); i++ {
 			elem := p.branchPageElement(uint16(i))
-			tx.forEachPage(elem.pgid, depth+1, fn)
+			tx.forEachPage(elem.pgid, depth+1, fn) // 对于分支page，遍历所有子page
 		}
 	}
 }
@@ -713,12 +713,12 @@ type TxStats struct {
 	RebalanceTime time.Duration // total time spent rebalancing
 
 	// Split/Spill statistics.
-	Split     int           // number of nodes split
+	Split     int           // number of nodes split 一个节点 拆分2个的次数
 	Spill     int           // number of nodes spilled
 	SpillTime time.Duration // total time spent spilling
 
 	// Write statistics.
-	Write     int           // number of writes performed
+	Write     int           // number of writes performed  写入文件的次数
 	WriteTime time.Duration // total time spent writing to disk
 }
 
