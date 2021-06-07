@@ -290,6 +290,7 @@ func (tx *Tx) rollback() {
 	if tx.db == nil { // 防止了重入
 		return
 	}
+
 	if tx.writable {
 		tx.db.freelist.rollback(tx.meta.txid)
 		if !tx.db.hasSyncedFreelist() {
@@ -308,6 +309,7 @@ func (tx *Tx) close() {
 	if tx.db == nil {
 		return
 	}
+
 	if tx.writable {
 		// Grab freelist stats.
 		var freelistFreeN = tx.db.freelist.freeCount()
@@ -327,7 +329,7 @@ func (tx *Tx) close() {
 		tx.db.stats.TxStats.add(&tx.stats)
 		tx.db.statlock.Unlock()
 	} else {
-		tx.db.removeTx(tx)
+		tx.db.removeTx(tx) // 从 txs 里移除
 	}
 
 	// Clear all references.
@@ -521,7 +523,7 @@ func (tx *Tx) allocate(count int) (*page, error) {
 	}
 
 	// Save to our page cache.
-	tx.pages[p.id] = p
+	tx.pages[p.id] = p // 记录当前事务 锁分配的page, 之后写盘 释放脏页
 
 	// Update statistics.
 	tx.stats.PageCount += count
@@ -558,6 +560,7 @@ func (tx *Tx) write() error {
 			}
 			buf := unsafeByteSlice(unsafe.Pointer(p), written, 0, int(sz))
 
+			// 写文件 不需要 考虑 half write ??
 			if _, err := tx.db.ops.writeAt(buf, offset); err != nil {
 				return err
 			}
@@ -578,13 +581,13 @@ func (tx *Tx) write() error {
 	}
 
 	// Ignore file sync if flag is set on DB.
-	if !tx.db.NoSync || IgnoreNoSync {
+	if !tx.db.NoSync || IgnoreNoSync { // 需要同步写盘, IgnoreNoSync 在linux上总是false
 		if err := fdatasync(tx.db); err != nil {
 			return err
 		}
 	}
 
-	// Put small pages back to page pool. 单页才 使用sync.Pool 缓存
+	// Put small pages back to page pool. 单页才 使用sync.Pool 管理缓存
 	for _, p := range pages {
 		// Ignore page sizes over 1 page.
 		// These are allocated using make() instead of the page pool.
@@ -645,7 +648,7 @@ func (tx *Tx) page(id pgid) *page {
 	}
 
 	// Otherwise return directly from the mmap.
-	return tx.db.page(id)
+	return tx.db.page(id) // 可以从db里 随便拿??
 }
 
 // forEachPage iterates over every page within a given page and executes a function.
