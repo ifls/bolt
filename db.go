@@ -971,7 +971,7 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 	}
 
 	// Resize mmap() if we're at the end.
-	p.id = db.rwtx.meta.pgid
+	p.id = db.rwtx.meta.pgid                            // 这里直接把page id 份分配了??
 	var minsz = int((p.id+pgid(count))+1) * db.pageSize // 为什么要+1??
 	if minsz >= db.datasz {                             // == 也 重新 mmap??
 		// 映射更多内存

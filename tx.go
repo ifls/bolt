@@ -713,6 +713,7 @@ type TxStats struct {
 	RebalanceTime time.Duration // total time spent rebalancing
 
 	// Split/Spill statistics.
+	// 下面这两个的值应该是对等的
 	Split     int           // number of nodes split 一个节点 拆分2个的次数
 	Spill     int           // number of nodes spilled
 	SpillTime time.Duration // total time spent spilling

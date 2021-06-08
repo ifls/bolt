@@ -29,7 +29,7 @@ const DefaultFillPercent = 0.5
 // 相当于命名空间, 代表一个完整的B+树
 type Bucket struct {
 	*bucket                     // 内嵌
-	tx       *Tx                // the associated transaction
+	tx       *Tx                // 每个桶 一个事务?? the associated transaction
 	buckets  map[string]*Bucket // subbucket cache  子桶，缓存操作过的桶 使用名字 作为key 映射的
 	page     *page              // inline page reference
 	rootNode *node              // 根节点 materialized具体化 node for the root page.

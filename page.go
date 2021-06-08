@@ -106,7 +106,7 @@ func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
 // branchPageElement represents a node on a branch page.
 type branchPageElement struct {
 	pos uint32
-	// 非叶子节点不需要存flags？？
+	// 非叶子节点不需要存flags，page元数据记录了是 分支节点还是叶子节点
 	ksize uint32
 	pgid  pgid
 }
