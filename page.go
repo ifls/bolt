@@ -16,13 +16,13 @@ const leafPageElementSize = unsafe.Sizeof(leafPageElement{})     // 16B
 
 const (
 	branchPageFlag   = 0x01 // 分支页，也就是非叶子节点
-	leafPageFlag     = 0x02
-	metaPageFlag     = 0x04
-	freelistPageFlag = 0x10
+	leafPageFlag     = 0x02 // 叶子结页
+	metaPageFlag     = 0x04 // 元数据页
+	freelistPageFlag = 0x10 // 空闲列表页
 )
 
 const (
-	bucketLeafFlag = 0x01 // 叶子
+	bucketLeafFlag = 0x01 // 子桶作为叶子
 )
 
 type pgid uint64
@@ -196,7 +196,7 @@ func mergepgids(dst, a, b pgids) {
 		// Merge largest prefix of lead that is ahead of follow[0].
 		// 二分查找加速，而不是线性遍历两个有序数组合并
 		n := sort.Search(len(lead), func(i int) bool { return lead[i] > follow[0] })
-		merged = append(merged, lead[:n]...)
+		merged = append(merged, lead[:n]...) // n 之前的都是 <= follow[0]
 		if n >= len(lead) {
 			break
 		}
