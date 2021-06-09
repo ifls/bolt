@@ -29,9 +29,9 @@ const DefaultFillPercent = 0.5
 // 相当于命名空间, 代表一个完整的B+树
 type Bucket struct {
 	*bucket                     // 内嵌
-	tx       *Tx                // 每个桶 一个事务?? the associated transaction
+	tx       *Tx                // 每个桶 绑定一个事务?? the associated transaction
 	buckets  map[string]*Bucket // subbucket cache  子桶，缓存操作过的桶 使用名字 作为key 映射的
-	page     *page              // inline page reference
+	page     *page              // 保存 内联 页 inline page reference
 	rootNode *node              // 根节点 materialized具体化 node for the root page.
 	nodes    map[pgid]*node     // node cache 缓存操作过的node 从页面 创建出来的 node
 
@@ -43,10 +43,10 @@ type Bucket struct {
 	FillPercent float64 // 一个阈值
 }
 
-// bucket represents the on-file representation of a bucket.
-// This is stored as the "value" of a bucket key. If the bucket is small enough,
-// then its root page can be stored inline in the "value", after the bucket
-// header. In the case of inline buckets, the "root" will be 0.
+// bucket represents the on-file文件上的 representation of a bucket.
+// This is stored as the "value" of a bucket key.
+// If the bucket is small enough, then its root page can be stored inline in the "value", after the bucket header.
+// In the case of inline buckets, the "root" will be 0. 内联子桶的 根页面 id 为 0
 type bucket struct {
 	root     pgid   // 根页面id page id of the bucket's root-level page
 	sequence uint64 // 单调递增 monotonically incrementing, used by NextSequence()
@@ -95,7 +95,7 @@ func (b *Bucket) Cursor() *Cursor {
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (b *Bucket) Bucket(name []byte) *Bucket {
-	// 先从缓存取
+	// 先从下面代码存入的缓存里取
 	if b.buckets != nil {
 		if child := b.buckets[string(name)]; child != nil {
 			return child
@@ -140,15 +140,16 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 
 	// If this is a writable transaction then we need to copy the bucket entry.
 	// Read-only transactions can point directly at the mmap entry.
-	if b.tx.writable && !unaligned {
+	if b.tx.writable && !unaligned { // 写事务
 		child.bucket = &bucket{}
-		*child.bucket = *(*bucket)(unsafe.Pointer(&value[0]))
+		*child.bucket = *(*bucket)(unsafe.Pointer(&value[0])) // 拷贝数据
 	} else {
-		child.bucket = (*bucket)(unsafe.Pointer(&value[0]))
+		// 只读事务, 不用拷贝一份
+		child.bucket = (*bucket)(unsafe.Pointer(&value[0])) // 拷贝指针
 	}
 
 	// Save a reference to the inline page if the bucket is inline.
-	if child.root == 0 {
+	if child.root == 0 { // 内联页
 		child.page = (*page)(unsafe.Pointer(&value[bucketHeaderSize]))
 	}
 
@@ -182,7 +183,7 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 		return nil, ErrIncompatibleValue
 	}
 
-	// Create empty, inline bucket.
+	// Create empty, inline bucket. 内联
 	var bucket = Bucket{
 		bucket:      &bucket{},
 		rootNode:    &node{isLeaf: true},
@@ -192,11 +193,11 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 
 	// Insert into node.  old key 和 new key 要独立，不然传两个参数没意义
 	key = cloneBytes(key)
+	// 会插入到叶子节点??
 	c.node().put(key, key, value, 0, bucketLeafFlag) // 标记为桶
 
-	// Since subbuckets are not allowed on inline buckets, we need to
-	// dereference the inline page, if it exists. This will cause the bucket
-	// to be treated as a regular, non-inline bucket for the rest of the tx.
+	// Since subbuckets are not allowed on inline buckets, we need to dereference the inline page, if it exists.
+	// This will cause the bucket to be treated as a regular, non-inline bucket for the rest of the tx.
 	b.page = nil
 
 	// 为什么不直接返回 &bucket ??
@@ -238,7 +239,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 
 	// Recursively delete all child buckets.
 	child := b.Bucket(key)
-	// 递归删除 所有 子桶和key
+	// 递归删除 所有 子桶
 	err := child.ForEach(func(k, v []byte) error {
 		if _, _, childFlags := child.Cursor().seek(k); (childFlags & bucketLeafFlag) != 0 {
 			if err := child.DeleteBucket(k); err != nil {
@@ -251,17 +252,17 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 		return err
 	}
 
-	// 删除自己
+	// 如果再换村里, 也要删除
 	// Remove cached copy.
 	delete(b.buckets, string(key))
 
 	// Release all bucket pages to freelist.
 	child.nodes = nil
 	child.rootNode = nil
-	child.free() // 释放所使用的page
+	child.free() // 释放所使用的page, 也就是删除所有数据
 
 	// Delete the node if we have a matching key.
-	c.node().del(key)
+	c.node().del(key) // bucket 所对应的key 也要删除
 
 	return nil
 }
@@ -350,6 +351,7 @@ func (b *Bucket) Delete(key []byte) error {
 	return nil
 }
 
+// 顺序号 是 配合 遍历的?
 // Sequence returns the current integer for the bucket without incrementing it.
 func (b *Bucket) Sequence() uint64 { return b.bucket.sequence }
 
@@ -393,7 +395,7 @@ func (b *Bucket) NextSequence() (uint64, error) {
 	return b.bucket.sequence, nil
 }
 
-// ForEach executes a function for each key/value pair in a bucket.
+// ForEach executes a function for each key/value pair in a bucket. 遍历所有的kv
 // If the provided function returns an error then the iteration is stopped and
 // the error is returned to the caller. The provided function must not modify
 // the bucket; this will result in undefined behavior.
@@ -495,7 +497,7 @@ func (b *Bucket) Stats() BucketStats {
 // forEachPage iterates over every page in a bucket, including inline pages.
 func (b *Bucket) forEachPage(fn func(*page, int)) {
 	// If we have an inline page then just use that.
-	if b.page != nil { // 桶里面只有一页时， 会inline这个page
+	if b.page != nil { // 桶里面只有一页时， 会遍历这个 内联页 page
 		fn(b.page, 0)
 		return
 	}
@@ -611,6 +613,7 @@ func (b *Bucket) inlineable() bool {
 	var n = b.rootNode
 
 	// Bucket must only contain a single leaf node.
+	// n == nil 说明什么??
 	if n == nil || !n.isLeaf {
 		return false
 	}
@@ -648,7 +651,7 @@ func (b *Bucket) write() []byte {
 
 	// Convert byte slice to a fake page and write the root node.
 	var p = (*page)(unsafe.Pointer(&value[bucketHeaderSize]))
-	n.write(p)
+	n.write(p) // 根节点, 内联
 
 	return value
 }
